@@ -26,7 +26,8 @@ npm install
 npm run dev
 ```
 
-Open the Next.js URL, sign in with `admin` / `admin123`.
+Open the Next.js URL, sign in with `admin` / `admin123`.  
+(Multi-user accounts are deferred — admin-only for testing right now.)
 
 ## Architecture (short)
 

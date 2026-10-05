@@ -82,18 +82,6 @@ export async function login(username: string, password: string) {
   return data.user;
 }
 
-export async function register(username: string, password: string) {
-  const data = await request<{
-    access_token: string;
-    user: AuthUser;
-  }>("/api/auth/register", {
-    method: "POST",
-    body: JSON.stringify({ username, password }),
-  });
-  setToken(data.access_token);
-  return data.user;
-}
-
 export async function me(): Promise<AuthUser> {
   return request("/api/auth/me");
 }

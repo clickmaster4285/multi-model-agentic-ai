@@ -22,7 +22,6 @@ from src.auth import (
     create_access_token,
     get_current_user,
     get_db,
-    hash_password,
     require_admin,
     verify_password,
 )
@@ -74,11 +73,6 @@ app.add_middleware(
 class LoginPayload(BaseModel):
     username: str
     password: str
-
-
-class RegisterPayload(BaseModel):
-    username: str = Field(min_length=3, max_length=80)
-    password: str = Field(min_length=6, max_length=128)
 
 
 class AgentPayload(BaseModel):
@@ -168,24 +162,12 @@ def login(payload: LoginPayload, db: Session = Depends(get_db)) -> dict[str, Any
 
 
 @app.post("/api/auth/register")
-def register(payload: RegisterPayload, db: Session = Depends(get_db)) -> dict[str, Any]:
-    exists = db.scalar(select(User).where(User.username == payload.username))
-    if exists:
-        raise HTTPException(status_code=400, detail="Username already taken")
-    user = User(
-        username=payload.username.strip(),
-        password_hash=hash_password(payload.password),
-        role="member",
+def register_disabled() -> dict[str, Any]:
+    """Multi-user registration is deferred — use default admin for testing."""
+    raise HTTPException(
+        status_code=403,
+        detail="User registration is disabled for now. Sign in as admin (default: admin / admin123).",
     )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    token = create_access_token(user)
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user": {"id": user.id, "username": user.username, "role": user.role},
-    }
 
 
 @app.get("/api/auth/me")
@@ -373,18 +355,22 @@ async def job_events_stream(
         terminal = {"succeeded", "failed", "cancelled"}
         idle_rounds = 0
         while True:
+            payloads: list[tuple[int, str]] = []
+            status = "queued"
             with session_scope() as session:
                 current = get_job(session, job_id)
                 if current is None:
                     yield f"data: {json.dumps({'type': 'fatal', 'error': 'Job missing'})}\n\n"
                     break
-                rows = list_events_after(session, job_id, last_seq)
                 status = current.status
-            for row in rows:
-                last_seq = row.seq
-                yield f"data: {row.event_json}\n\n"
+                rows = list_events_after(session, job_id, last_seq)
+                # Copy fields inside the session to avoid DetachedInstanceError.
+                payloads = [(row.seq, row.event_json) for row in rows]
+            for seq, event_json in payloads:
+                last_seq = seq
+                yield f"data: {event_json}\n\n"
             if status in terminal:
-                idle_rounds = idle_rounds + 1 if not rows else 0
+                idle_rounds = idle_rounds + 1 if not payloads else 0
                 if idle_rounds >= 2:
                     break
             await asyncio.sleep(0.4)

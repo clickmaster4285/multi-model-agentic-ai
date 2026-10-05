@@ -57,7 +57,10 @@ class Config:
             timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "300")),
             log_dir=Path(os.getenv("LOG_DIR", str(ROOT / "logs"))),
             database_url=os.getenv("DATABASE_URL", default_db),
-            jwt_secret=os.getenv("JWT_SECRET", "change-me-multeagent-dev-secret"),
+            jwt_secret=os.getenv(
+                "JWT_SECRET",
+                "change-me-multeagent-dev-secret-32b+",
+            ),
             jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "720")),
             llm_slots=max(1, int(os.getenv("LLM_SLOTS", "1"))),
             max_active_jobs_per_user=max(1, int(os.getenv("MAX_ACTIVE_JOBS_PER_USER", "1"))),

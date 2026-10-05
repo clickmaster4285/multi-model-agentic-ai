@@ -21,7 +21,6 @@ import {
   listModels,
   login,
   me,
-  register,
   resetAgents,
   setToken,
   streamJobEvents,
@@ -38,6 +37,7 @@ import type {
   ModelInfo,
   RunMode,
 } from "@/lib/types";
+import MarkdownBody from "@/components/MarkdownBody";
 
 const emptyForm: AgentInput = {
   name: "",
@@ -56,7 +56,6 @@ export default function ControlDeck() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authUser, setAuthUser] = useState("");
   const [authPass, setAuthPass] = useState("");
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -137,10 +136,8 @@ export default function ControlDeck() {
     event.preventDefault();
     setAuthError(null);
     try {
-      const u =
-        authMode === "login"
-          ? await login(authUser.trim(), authPass)
-          : await register(authUser.trim(), authPass);
+      // Multi-user accounts come later — default admin is enough for testing.
+      const u = await login(authUser.trim(), authPass);
       setUser(u);
       await loadAgents();
       await refreshModels(true);
@@ -389,11 +386,20 @@ export default function ControlDeck() {
         </header>
 
         <form className="auth-card" onSubmit={handleAuth}>
-          <h2>{authMode === "login" ? "Sign in" : "Create account"}</h2>
-          <p className="hint">Default admin: admin / admin123 (change after first login).</p>
+          <h2>Sign in</h2>
+          <p className="hint">
+            Team user accounts come later. For now use the default admin:
+            <br />
+            <strong>admin / admin123</strong>
+          </p>
           <label>
             Username
-            <input value={authUser} onChange={(e) => setAuthUser(e.target.value)} required />
+            <input
+              value={authUser}
+              onChange={(e) => setAuthUser(e.target.value)}
+              placeholder="admin"
+              required
+            />
           </label>
           <label>
             Password
@@ -401,20 +407,15 @@ export default function ControlDeck() {
               type="password"
               value={authPass}
               onChange={(e) => setAuthPass(e.target.value)}
+              placeholder="admin123"
               required
             />
           </label>
           {authError ? <p className="banner">{authError}</p> : null}
           <div className="composer-row">
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() => setAuthMode(authMode === "login" ? "register" : "login")}
-            >
-              {authMode === "login" ? "Need an account?" : "Have an account?"}
-            </button>
+            <span />
             <button type="submit" className="btn primary">
-              {authMode === "login" ? "Sign in" : "Register"}
+              Sign in
             </button>
           </div>
         </form>
