@@ -59,7 +59,7 @@ def process_job(job_id: str, config: Config | None = None) -> None:
             with session_scope(config) as session:
                 if get_job(session, job_id) and get_job(session, job_id).status == "cancelled":
                     return
-                set_job_status(session, job_id, "succeeded")
+                # Emit completion event before terminal status so SSE clients drain it.
                 append_event(
                     session,
                     job_id,
@@ -70,6 +70,7 @@ def process_job(job_id: str, config: Config | None = None) -> None:
                         "errors": result.errors,
                     },
                 )
+                set_job_status(session, job_id, "succeeded")
             return
 
         if mode == "mixed":
@@ -111,6 +112,7 @@ def process_job(job_id: str, config: Config | None = None) -> None:
                 return
             if current.status == "cancelled":
                 return
+            # session_done was already appended via on_progress inside run_session.
             status = "failed" if result.errors and result.consensus is None else "succeeded"
             set_job_status(
                 session,

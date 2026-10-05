@@ -35,6 +35,8 @@ from src.jobs import (
     job_to_dict,
     list_events_after,
     queue_depth,
+    soft_delete_job,
+    soft_delete_jobs,
 )
 from src.llm_client import LLMClient
 from src.model_registry import list_models, sync_models_from_ollama
@@ -93,6 +95,10 @@ class AgentUpdatePayload(BaseModel):
     enabled: bool | None = None
     sort_order: int | None = None
     accent: str | None = None
+
+
+class SoftDeleteJobsPayload(BaseModel):
+    job_ids: list[str] = Field(default_factory=list)
 
 
 class JobCreatePayload(BaseModel):
@@ -295,12 +301,48 @@ def create_job_endpoint(
 def list_jobs(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-    limit: int = 30,
+    limit: int = 100,
 ) -> list[dict[str, Any]]:
-    stmt = select(Job).order_by(Job.created_at.desc()).limit(min(limit, 100))
+    stmt = (
+        select(Job)
+        .where(Job.deleted_at.is_(None))
+        .order_by(Job.created_at.desc())
+        .limit(min(limit, 100))
+    )
     if user.role != "admin":
         stmt = stmt.where(Job.user_id == user.id)
     return [job_to_dict(j) for j in db.scalars(stmt).all()]
+
+
+@app.post("/api/jobs/soft-delete")
+def soft_delete_jobs_endpoint(
+    payload: SoftDeleteJobsPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Soft-delete one or more jobs (conversation turns). Data is retained."""
+    ids = [jid.strip() for jid in payload.job_ids if jid and jid.strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="job_ids required")
+    deleted = soft_delete_jobs(db, ids, user=user)
+    db.commit()
+    return {"status": "soft_deleted", "deleted_ids": deleted, "count": len(deleted)}
+
+
+@app.delete("/api/jobs/{job_id}")
+def soft_delete_job_endpoint(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    job = get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if user.role != "admin" and job.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    soft_delete_job(db, job)
+    db.commit()
+    return {"status": "soft_deleted", "id": job_id}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -334,6 +376,28 @@ def cancel_job_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return job_to_dict(job)
+
+
+@app.get("/api/jobs/{job_id}/history")
+def job_events_history(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return all stored events for a job (for chat history replay)."""
+    job = get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if user.role != "admin" and job.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    rows = list_events_after(db, job_id, 0)
+    events = []
+    for row in rows:
+        try:
+            events.append(json.loads(row.event_json))
+        except json.JSONDecodeError:
+            events.append({"type": "raw", "body": row.event_json})
+    return {"job": job_to_dict(job), "events": events}
 
 
 @app.get("/api/jobs/{job_id}/events")
@@ -370,10 +434,13 @@ async def job_events_stream(
                 last_seq = seq
                 yield f"data: {event_json}\n\n"
             if status in terminal:
+                # Keep draining until events stop arriving (avoid cutting off last msgs).
                 idle_rounds = idle_rounds + 1 if not payloads else 0
-                if idle_rounds >= 2:
+                if idle_rounds >= 5:
                     break
-            await asyncio.sleep(0.4)
+            else:
+                idle_rounds = 0
+            await asyncio.sleep(0.35)
 
     return StreamingResponse(
         event_generator(),

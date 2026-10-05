@@ -46,11 +46,36 @@ def get_engine(config: Config | None = None):
     return _engine
 
 
+def _ensure_column(engine, table: str, column: str, ddl: str) -> None:
+    """Add a missing column on existing DBs (create_all does not alter)."""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        dialect = engine.dialect.name
+        if dialect == "sqlite":
+            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            names = {row[1] for row in rows}
+            if column not in names:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+        else:
+            # Postgres / others: check information_schema
+            exists = conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = :table AND column_name = :column"
+                ),
+                {"table": table, "column": column},
+            ).fetchone()
+            if not exists:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+
+
 def init_db(config: Config | None = None) -> None:
     from src import models_db  # noqa: F401
 
     engine = get_engine(config)
     Base.metadata.create_all(bind=engine)
+    _ensure_column(engine, "jobs", "deleted_at", "deleted_at DATETIME")
 
 
 @contextmanager

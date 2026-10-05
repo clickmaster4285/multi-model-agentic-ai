@@ -61,11 +61,20 @@ export type Job = {
   error?: string | null;
   log_path?: string | null;
   created_at?: string | null;
+  deleted_at?: string | null;
 };
 
 export type DebateEvent = {
   type: string;
   [key: string]: unknown;
+};
+
+export type ToolStep = {
+  id: string;
+  tool: string;
+  args?: string;
+  result?: string;
+  error?: boolean;
 };
 
 export type FeedItem = {
@@ -77,4 +86,6 @@ export type FeedItem = {
   accent?: string;
   pending?: boolean;
   agentId?: string;
+  /** Collapsed tool activity attached to an agent step */
+  tools?: ToolStep[];
 };

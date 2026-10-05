@@ -128,8 +128,8 @@ export async function createJob(payload: {
   return request("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
 }
 
-export async function listJobs(): Promise<Job[]> {
-  return request("/api/jobs");
+export async function listJobs(limit = 100): Promise<Job[]> {
+  return request(`/api/jobs?limit=${Math.min(Math.max(limit, 1), 100)}`);
 }
 
 export async function cancelJob(jobId: string): Promise<Job> {
@@ -137,6 +137,25 @@ export async function cancelJob(jobId: string): Promise<Job> {
     method: "POST",
     body: "{}",
   });
+}
+
+/** Soft-delete jobs (conversation turns). Rows are kept with deleted_at set. */
+export async function softDeleteJobs(jobIds: string[]): Promise<{
+  status: string;
+  deleted_ids: string[];
+  count: number;
+}> {
+  return request("/api/jobs/soft-delete", {
+    method: "POST",
+    body: JSON.stringify({ job_ids: jobIds }),
+  });
+}
+
+export async function getJobHistory(jobId: string): Promise<{
+  job: Job;
+  events: DebateEvent[];
+}> {
+  return request(`/api/jobs/${encodeURIComponent(jobId)}/history`);
 }
 
 export async function streamJobEvents(

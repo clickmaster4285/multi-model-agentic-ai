@@ -22,9 +22,18 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _not_deleted():
+    return Job.deleted_at.is_(None)
+
+
 def queue_depth(session: Session) -> int:
     return int(
-        session.scalar(select(func.count()).select_from(Job).where(Job.status == "queued")) or 0
+        session.scalar(
+            select(func.count())
+            .select_from(Job)
+            .where(Job.status == "queued", _not_deleted())
+        )
+        or 0
     )
 
 
@@ -33,7 +42,7 @@ def count_active_for_user(session: Session, user_id: int) -> int:
         session.scalar(
             select(func.count())
             .select_from(Job)
-            .where(Job.user_id == user_id, Job.status.in_(ACTIVE))
+            .where(Job.user_id == user_id, Job.status.in_(ACTIVE), _not_deleted())
         )
         or 0
     )
@@ -146,7 +155,7 @@ def claim_next_job(session: Session) -> Job | None:
     dialect = session.bind.dialect.name if session.bind is not None else "sqlite"
     stmt = (
         select(Job)
-        .where(Job.status == "queued")
+        .where(Job.status == "queued", _not_deleted())
         .order_by(Job.priority.asc(), Job.created_at.asc())
         .limit(1)
     )
@@ -183,11 +192,44 @@ def set_job_status(
     session.flush()
 
 
-def get_job(session: Session, job_id: str) -> Job | None:
-    return session.get(Job, job_id)
+def get_job(session: Session, job_id: str, *, include_deleted: bool = False) -> Job | None:
+    job = session.get(Job, job_id)
+    if job is None:
+        return None
+    if not include_deleted and job.deleted_at is not None:
+        return None
+    return job
+
+
+def soft_delete_job(session: Session, job: Job) -> Job:
+    """Hide a job and cancel it if still active. Rows/events are kept."""
+    if job.deleted_at is None:
+        job.deleted_at = _utcnow()
+    if job.status in ACTIVE:
+        job.status = "cancelled"
+        job.finished_at = job.finished_at or _utcnow()
+        append_event(session, job.id, {"type": "job_cancelled", "job_id": job.id, "reason": "soft_deleted"})
+    session.flush()
+    return job
+
+
+def soft_delete_jobs(session: Session, job_ids: list[str], *, user: User | None = None) -> list[str]:
+    """Soft-delete many jobs. Returns ids that were soft-deleted."""
+    if not job_ids:
+        return []
+    stmt = select(Job).where(Job.id.in_(job_ids), _not_deleted())
+    if user is not None and user.role != "admin":
+        stmt = stmt.where(Job.user_id == user.id)
+    deleted: list[str] = []
+    for job in session.scalars(stmt).all():
+        soft_delete_job(session, job)
+        deleted.append(job.id)
+    return deleted
 
 
 def cancel_job(session: Session, job: Job) -> Job:
+    if job.deleted_at is not None:
+        raise ValueError("Job is deleted")
     if job.status in {"succeeded", "failed", "cancelled"}:
         raise ValueError(f"Job already finished with status={job.status}")
     job.status = "cancelled"
@@ -212,4 +254,5 @@ def job_to_dict(job: Job) -> dict[str, Any]:
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "deleted_at": job.deleted_at.isoformat() if job.deleted_at else None,
     }
