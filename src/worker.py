@@ -9,6 +9,7 @@ from typing import Any
 
 from src.agent_store import AgentStore
 from src.agentic.runtime import run_agentic
+from src.chat_runner import run_chat
 from src.config import Config
 from src.db import session_scope
 from src.jobs import append_event, claim_next_job, get_job, set_job_status
@@ -46,6 +47,29 @@ def process_job(job_id: str, config: Config | None = None) -> None:
 
     try:
         if _is_cancelled(job_id):
+            return
+
+        route = payload.get("route") if isinstance(payload.get("route"), dict) else None
+        if route:
+            on_progress({"type": "route_decided", **route})
+
+        if mode == "chat":
+            result = run_chat(
+                query,
+                config=config,
+                model_plan=model_plan,
+                on_progress=on_progress,
+            )
+            with session_scope(config) as session:
+                if get_job(session, job_id) and get_job(session, job_id).status == "cancelled":
+                    return
+                status = "failed" if result.errors and not result.output else "succeeded"
+                set_job_status(
+                    session,
+                    job_id,
+                    status,
+                    error="; ".join(result.errors) if result.errors else None,
+                )
             return
 
         if mode == "agentic":

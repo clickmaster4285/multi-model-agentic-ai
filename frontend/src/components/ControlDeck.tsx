@@ -10,7 +10,7 @@ import {
   type MouseEvent,
 } from "react";
 import {
-  API_ORIGIN,
+  getApiOrigin,
   cancelJob,
   createAgent,
   createJob,
@@ -100,7 +100,7 @@ export default function ControlDeck() {
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [parallel, setParallel] = useState(false);
-  const [runMode, setRunMode] = useState<RunMode>("debate");
+  const [runMode, setRunMode] = useState<RunMode>("auto");
   const [modelOverride, setModelOverride] = useState("");
   const [allowOverflow, setAllowOverflow] = useState(true);
   const [query, setQuery] = useState("");
@@ -204,12 +204,10 @@ export default function ControlDeck() {
       ]);
       try {
         let built: FeedItem[] = [];
-        let lastMode: RunMode | null = null;
         const errors: string[] = [];
         for (const jobId of thread.jobIds) {
           try {
             const history = await getJobHistory(jobId);
-            lastMode = history.job.mode;
             const slice = buildFeedFromEvents(history.events, history.job.query).filter(
               (item) => item.id !== STATUS_ID,
             );
@@ -233,7 +231,7 @@ export default function ControlDeck() {
             }
           }
         }
-        if (lastMode) setRunMode(lastMode);
+        // Keep the user's mode preference (usually Auto); don't sticky-switch to debate.
         if (built.length === 0 && thread.jobIds.length === 0) {
           setFeed([]);
         } else if (errors.length && built.length === 0) {
@@ -286,8 +284,21 @@ export default function ControlDeck() {
         await refreshModels();
         await refreshJobs();
       })
-      .catch(() => setToken(null));
+      .catch(() => {
+        setToken(null);
+        setUser(null);
+      });
   }, [loadAgents, refreshModels, refreshJobs]);
+
+  // If a request cleared the token (401), leave the chat shell and show login.
+  useEffect(() => {
+    if (user && !getToken()) {
+      setUser(null);
+      setAgents([]);
+      setJobs([]);
+      setFeed([]);
+    }
+  }, [user, feed.length, running]);
 
   function applyEvent(event: DebateEvent) {
     setFeed((prev) => reduceFeed(prev, event));
@@ -428,10 +439,12 @@ export default function ControlDeck() {
     if (running) return;
     const text = query.trim();
     if (!text) return;
-    if (runMode !== "agentic" && selected.size === 0) {
-      alert("Select at least one agent in Settings.");
-      setSettingsOpen(true);
-      return;
+    if (runMode === "debate" || runMode === "mixed") {
+      if (selected.size === 0) {
+        alert("Select at least one agent in Settings.");
+        setSettingsOpen(true);
+        return;
+      }
     }
 
     let threadId = activeThreadId;
@@ -509,7 +522,7 @@ export default function ControlDeck() {
                 ? health.llm_reachable
                   ? `${health.model} ready`
                   : "LLM offline"
-                : healthError || `API · ${API_ORIGIN}`}
+                : healthError || `API · ${getApiOrigin()}`}
             </span>
           </div>
           <button type="submit" className="btn primary full">
@@ -684,6 +697,8 @@ export default function ControlDeck() {
           </div>
           <div className="chat-controls">
             <select value={runMode} onChange={(e) => setRunMode(e.target.value as RunMode)}>
+              <option value="auto">Auto</option>
+              <option value="chat">Chat</option>
               <option value="debate">Debate</option>
               <option value="agentic">Agentic</option>
               <option value="mixed">Mixed</option>
@@ -723,7 +738,7 @@ export default function ControlDeck() {
           {feed.length === 0 ? (
             <div className="empty hero-empty">
               <strong>Start a conversation</strong>
-              Ask a business question, kick off an agentic goal, or open a chat from History.
+              Say hi, ask a question, request a story, or run a full debate — Auto picks the path.
             </div>
           ) : (
             feed.map((item, index) => {
@@ -807,7 +822,9 @@ export default function ControlDeck() {
             placeholder={
               runMode === "agentic"
                 ? "Describe a goal for the agentic loop…"
-                : "Message MulteAgent…"
+                : runMode === "debate" || runMode === "mixed"
+                  ? "Ask a decision / business question…"
+                  : "Message MulteAgent…"
             }
             required
           />

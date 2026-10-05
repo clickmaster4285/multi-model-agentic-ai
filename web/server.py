@@ -103,7 +103,7 @@ class SoftDeleteJobsPayload(BaseModel):
 
 class JobCreatePayload(BaseModel):
     query: str = Field(min_length=1)
-    mode: Literal["debate", "agentic", "mixed"] = "debate"
+    mode: Literal["auto", "chat", "debate", "agentic", "mixed"] = "auto"
     execution_mode: Literal["parallel", "sequential"] = "sequential"
     agent_ids: list[str] | None = None
     model: str | None = None

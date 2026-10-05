@@ -1,6 +1,6 @@
 export type AgentStage = "panel" | "consensus";
 export type ExecutionMode = "parallel" | "sequential";
-export type RunMode = "debate" | "agentic" | "mixed";
+export type RunMode = "auto" | "chat" | "debate" | "agentic" | "mixed";
 
 export type Agent = {
   id: string;

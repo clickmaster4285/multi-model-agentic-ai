@@ -13,7 +13,7 @@ This is the single review document for the whole system: **what** we are buildin
 
 ## 1. One-sentence product
 
-MulteAgent is a **team-usable, local-first platform** where people submit goals/questions as **jobs**; workers run **debate**, **agentic**, or **mixed** modes against local (and optional cloud) LLMs; the UI shows live progress.
+MulteAgent is a **team-usable, local-first platform** where people submit goals/questions as **jobs**; an **adaptive intent router** picks **chat**, **debate**, **agentic**, or **mixed** before heavy LLM work; the UI shows live progress.
 
 ---
 
@@ -28,6 +28,7 @@ MulteAgent is a **team-usable, local-first platform** where people submit goals/
 | Long runs in HTTP        | 1–3 minute debates break browsers/proxies     | Async jobs + SSE event stream            |
 | Only “chat opinions”     | Real work needs plan → act → check            | Agentic runtime with allowlisted tools   |
 | One model for everything | Queue backs up; small tasks waste big models  | Model registry + fast/strong/cloud roles |
+| Every “hi” runs 3 agents | Wastes GPU time on greetings / stories        | Adaptive intent router (Auto → chat)     |
 | No identity              | Cannot audit, quota, or prioritize            | JWT login + per-user job history         |
 | Framework lock-in        | Opaque prompts, heavy deps, hard to debug     | Own thin Python orchestration            |
 
@@ -58,23 +59,33 @@ MulteAgent is a **team-usable, local-first platform** where people submit goals/
 
 
 
-## 4. Three run modes
+## 4. Run modes (+ Auto router)
 
 
 | Mode        | Flow                                      | Use when                           |
 | ----------- | ----------------------------------------- | ---------------------------------- |
+| **Auto**    | Intent router → chat / debate / agentic   | Default UI mode                    |
+| **Chat**    | Single Assistant LLM call                 | Greetings, stories, simple Q&A     |
 | **Debate**  | Panel agents → Consensus                  | Decisions, risk review             |
 | **Agentic** | Planner → Worker(+tools) → Critic         | Research, drafts, multi-step goals |
 | **Mixed**   | Agentic first, then Debate on the summary | Best for serious “should we…” work |
 
 
 ```text
-User submits job
+User submits job (mode=auto|chat|debate|agentic|mixed)
     │
-    ├─ debate ──────────► panel (seq/parallel) ─► consensus
-    ├─ agentic ─────────► plan ─► tools/steps ─► critic
-    └─ mixed ───────────► agentic ─► debate on findings
+    ├─ auto ──► intent_router.classify_query
+    │              ├─ chat ─────► single Assistant reply
+    │              ├─ debate ───► panel → consensus
+    │              └─ agentic ──► plan → tools/steps → critic
+    ├─ chat ────► chat_runner (forced)
+    ├─ debate ──► panel (seq/parallel) → consensus
+    ├─ agentic ─► plan → tools/steps → critic
+    └─ mixed ───► agentic → debate on findings
 ```
+
+**Router location:** `src/intent_router.py` (heuristics first; optional `MODEL_FAST` classify for ambiguous mid/long text).  
+**Chat path:** `src/chat_runner.py`. Wired in `create_job` + `process_job`. UI emits / shows `route_decided`.
 
 ---
 
@@ -100,7 +111,7 @@ User submits job
                             │ claim job
 ┌───────────────────────────▼─────────────────────────────────┐
 │  Worker(s)  (in-process + optional worker_main.py)          │
-│  debate engine · agentic runtime · LLM semaphore            │
+│  intent route · chat · debate · agentic · LLM semaphore     │
 └───────────────────────────┬─────────────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────────┐
@@ -132,6 +143,8 @@ User submits job
 | `src/llm_client.py`              | Ollama + OpenAI-compatible chat       |
 | `src/llm_lock.py`                | Global GPU concurrency gate           |
 | `src/runner.py`                  | Debate panel → consensus              |
+| `src/intent_router.py`           | Auto mode: chat vs debate vs agentic  |
+| `src/chat_runner.py`             | Single-call Assistant path            |
 | `src/agentic/`                   | Planner / tools / critic loop         |
 | `src/jobs.py`                    | Create/claim/cancel jobs + events     |
 | `src/worker.py`                  | Job execution loop                    |
@@ -153,14 +166,15 @@ User submits job
 
 ## 7. End-to-end request lifecycle (how it works)
 
-1. User signs in → JWT stored in browser
-2. User picks mode (debate/agentic/mixed), agents, optional model
-3. UI `POST /api/jobs` → job row `status=queued` + `job_queued` event
+1. User signs in → JWT stored in browser (`multeagent_token`)
+2. User picks mode (**Auto** default, or Chat / Debate / Agentic / Mixed), agents, optional model
+3. UI `POST /api/jobs` → `classify_query` (if Auto) → job stored with **resolved** mode + `route_decided` event
 4. Worker claims job (`queued` → `running`)
-5. Worker emits events (`agent_start`, `tool_call`, `agent_done`, …) into `job_events`
-6. UI `GET /api/jobs/{id}/events` (SSE) streams those events live
+5. Worker runs chat / debate / agentic / mixed; emits `agent_start`, `tool_call`, `agent_done`, …
+6. UI `GET /api/jobs/{id}/events` (SSE) streams those events live (shows Route chip)
 7. Job finishes → `succeeded` / `failed` / `cancelled`
 8. Transcript also lands under `logs/`; agentic files under `artifacts/{job_id}/`
+9. Chat threads (localStorage) group multiple jobs into one conversation; soft-delete hides thread + jobs
 
 **Why jobs beat “run inside the HTTP request”**
 
@@ -420,6 +434,16 @@ Job states: `queued → running → succeeded | failed | cancelled`
 - UI modes: Debate | Agentic | Mixed
 
 **Done when:** a goal produces plan → steps → critic (and optional debate).
+
+### Phase C2 — Adaptive intent router (done)
+
+- `src/intent_router.py` heuristics (+ optional fast-model classify)  
+- `src/chat_runner.py` single Assistant path  
+- Modes: **Auto** (default), Chat, Debate, Agentic, Mixed  
+- `route_decided` event + UI route chip  
+- Soft-delete conversations; chat threads aggregate jobs
+
+**Done when:** `hi` and creative asks use chat; decision asks still debate; tool/research asks use agentic.
 
 ### Phase D — Cloud-ready hybrid
 

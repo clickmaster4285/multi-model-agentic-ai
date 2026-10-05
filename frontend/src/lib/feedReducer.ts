@@ -1,5 +1,5 @@
 import type { DebateEvent, FeedItem, ToolStep } from "@/lib/types";
-import { formatToolResult, summarizeArgs } from "@/lib/format";
+import { formatAgentOutput, formatToolResult, summarizeArgs } from "@/lib/format";
 
 export const STATUS_ID = "live-status";
 
@@ -83,6 +83,21 @@ export function reduceFeed(prev: FeedItem[], event: DebateEvent): FeedItem[] {
       `~${Number(event.estimated_wait_seconds || 0).toFixed(0)}s wait`,
     );
   }
+  if (type === "route_decided") {
+    const requested = String(event.requested_mode || "auto");
+    const resolved = String(event.resolved_mode || event.intent || "chat");
+    const intent = String(event.intent || resolved);
+    const reason = String(event.reason || "").slice(0, 80);
+    const label =
+      requested === "auto" || requested === resolved
+        ? `Auto -> ${resolved}`
+        : `${requested} (forced)`;
+    return upsertStatus(
+      prev,
+      "Route",
+      reason ? `${label} · ${intent} · ${reason}` : `${label} · ${intent}`,
+    );
+  }
   if (type === "job_started" || type === "session_start" || type === "agentic_start") {
     return upsertStatus(prev, "Working", "Running…");
   }
@@ -105,7 +120,14 @@ export function reduceFeed(prev: FeedItem[], event: DebateEvent): FeedItem[] {
   if (type === "tool_call") return attachToolCall(prev, event);
   if (type === "tool_result") return attachToolResult(prev, event);
   if (type === "agent_done") {
-    const body = formatToolResult(String(event.output || ""));
+    const rawOut = event.output;
+    const asText =
+      typeof rawOut === "string"
+        ? rawOut
+        : rawOut == null
+          ? ""
+          : JSON.stringify(rawOut, null, 2);
+    const body = formatAgentOutput(asText);
     const hasPending = prev.some((item) => item.agentId === event.agent_id && item.pending);
     if (!hasPending) {
       return [

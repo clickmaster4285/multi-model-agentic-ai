@@ -2,6 +2,8 @@
 
 Local-first, framework-free multi-agent system with:
 
+- **Auto** intent router (default) — greetings/stories → chat; decisions → debate; research → agentic
+- **Chat** — single fast Assistant reply
 - **Debate** (Optimist / Cynic / Consensus)
 - **Agentic** planner → tools → critic loop
 - **Mixed** (agentic research, then debate)
@@ -34,7 +36,9 @@ Open the Next.js URL, sign in with `admin` / `admin123`.
 | Piece | Role |
 |-------|------|
 | FastAPI (`web/server.py`) | Auth, agents, models, jobs, SSE |
-| Worker (`src/worker.py` / `worker_main.py`) | Claims jobs, runs debate/agentic |
+| Intent router (`src/intent_router.py`) | Auto mode: chat vs debate vs agentic |
+| Chat (`src/chat_runner.py`) | Single-call Assistant replies |
+| Worker (`src/worker.py` / `worker_main.py`) | Claims jobs, runs chat/debate/agentic |
 | DB (SQLite or Postgres) | Users, jobs, events, model registry |
 | LLM lock (`LLM_SLOTS`) | Fair GPU concurrency |
 | Next.js (`frontend/`) | Team UI |

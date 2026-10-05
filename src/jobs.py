@@ -11,6 +11,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from src.config import Config
+from src.intent_router import classify_query
 from src.model_registry import resolve_model_plan
 from src.models_db import Job, JobEvent, User
 
@@ -77,8 +78,9 @@ def create_job(
     priority: int = 100,
 ) -> Job:
     config = config or Config.from_env()
-    if mode not in {"debate", "agentic", "mixed"}:
-        raise ValueError("mode must be debate, agentic, or mixed")
+    requested_mode = (mode or "auto").strip().lower()
+    if requested_mode not in {"auto", "debate", "agentic", "mixed", "chat"}:
+        raise ValueError("mode must be auto, chat, debate, agentic, or mixed")
     if count_active_for_user(session, user.id) >= config.max_active_jobs_per_user:
         raise ValueError(
             f"User already has {config.max_active_jobs_per_user} active job(s). Wait or cancel."
@@ -89,6 +91,14 @@ def create_job(
         )
     if count_jobs_today(session, user.id) >= user.daily_job_quota:
         raise ValueError(f"Daily job quota reached ({user.daily_job_quota}).")
+
+    route = classify_query(query.strip(), requested_mode=requested_mode, config=config)
+    resolved_mode = route.resolved_mode
+    enriched_payload = {
+        **payload,
+        "requested_mode": requested_mode,
+        "route": route.as_dict(),
+    }
 
     wait = estimate_wait_seconds(session, config)
     model_plan = resolve_model_plan(
@@ -102,11 +112,11 @@ def create_job(
     job = Job(
         id=str(uuid.uuid4()),
         user_id=user.id,
-        mode=mode,
+        mode=resolved_mode,
         status="queued",
         priority=priority,
         query=query.strip(),
-        payload_json=json.dumps(payload),
+        payload_json=json.dumps(enriched_payload),
         model_plan_json=json.dumps(model_plan),
     )
     session.add(job)
@@ -117,10 +127,19 @@ def create_job(
         {
             "type": "job_queued",
             "job_id": job.id,
-            "mode": mode,
+            "mode": resolved_mode,
+            "requested_mode": requested_mode,
             "estimated_wait_seconds": wait,
             "model_plan": model_plan,
             "queue_depth": queue_depth(session),
+        },
+    )
+    append_event(
+        session,
+        job.id,
+        {
+            "type": "route_decided",
+            **route.as_dict(),
         },
     )
     return job

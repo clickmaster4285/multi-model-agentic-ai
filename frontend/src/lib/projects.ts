@@ -1,3 +1,5 @@
+import { newId } from "@/lib/id";
+
 export type Project = {
   id: string;
   name: string;
@@ -29,7 +31,7 @@ export function listProjects(): Project[] {
 
 export function createProject(name: string): Project {
   const project: Project = {
-    id: crypto.randomUUID(),
+    id: newId(),
     name: name.trim() || "Untitled project",
     jobIds: [],
     createdAt: new Date().toISOString(),

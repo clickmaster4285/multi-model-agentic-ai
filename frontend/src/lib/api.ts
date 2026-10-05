@@ -10,8 +10,42 @@ import type {
   RunMode,
 } from "./types";
 
-export const API_ORIGIN =
-  process.env.NEXT_PUBLIC_API_ORIGIN?.replace(/\/$/, "") || "http://127.0.0.1:8787";
+const API_PORT = process.env.NEXT_PUBLIC_API_PORT || "8787";
+
+function configuredOrigins(): string[] {
+  const raw =
+    process.env.NEXT_PUBLIC_API_ORIGINS ||
+    process.env.NEXT_PUBLIC_API_ORIGIN ||
+    `http://127.0.0.1:${API_PORT}`;
+  return raw
+    .split(",")
+    .map((s) => s.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+}
+
+/** Resolve API base from env list using the current page hostname (LAN vs localhost). */
+export function getApiOrigin(): string {
+  const origins = configuredOrigins();
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    const match = origins.find((origin) => {
+      try {
+        return new URL(origin).hostname === host;
+      } catch {
+        return false;
+      }
+    });
+    if (match) return match;
+    if (host === "localhost" || host === "127.0.0.1" || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
+      const proto = window.location.protocol === "https:" ? "https:" : "http:";
+      return `${proto}//${host}:${API_PORT}`;
+    }
+  }
+  return origins[0] || `http://127.0.0.1:${API_PORT}`;
+}
+
+/** @deprecated use getApiOrigin() — kept for display fallbacks during SSR */
+export const API_ORIGIN = configuredOrigins()[0] || `http://127.0.0.1:${API_PORT}`;
 
 const TOKEN_KEY = "multeagent_token";
 
@@ -27,7 +61,7 @@ export function setToken(token: string | null) {
 }
 
 function apiUrl(path: string): string {
-  return `${API_ORIGIN}${path.startsWith("/") ? path : `/${path}`}`;
+  return `${getApiOrigin()}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 function authHeaders(json = true): HeadersInit {
@@ -51,7 +85,7 @@ async function readError(response: Response): Promise<string> {
 function networkHint(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   if (/failed to fetch|networkerror|network error|load failed/i.test(msg)) {
-    return `Cannot reach API at ${API_ORIGIN}. Start: python main.py --gui (${msg})`;
+    return `Cannot reach API at ${getApiOrigin()}. Start: python main.py --gui (${msg})`;
   }
   return msg;
 }
@@ -62,7 +96,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: { ...authHeaders(!(init?.body instanceof FormData)), ...(init?.headers || {}) },
     });
-    if (!response.ok) throw new Error(await readError(response));
+    if (!response.ok) {
+      // Drop stale session so the login screen returns instead of a half-authed UI.
+      if (response.status === 401 && !path.includes("/api/auth/login")) {
+        setToken(null);
+      }
+      throw new Error(await readError(response));
+    }
     if (response.status === 204) return undefined as T;
     return response.json();
   } catch (err) {

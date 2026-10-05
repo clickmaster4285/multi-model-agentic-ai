@@ -1,15 +1,18 @@
-/** Turn raw tool / model output into readable chat text. */
-export function formatToolResult(raw: string): string {
-  const text = String(raw || "").trim();
-  if (!text) return "No output.";
-  if (text.startsWith("TOOL_ERROR:")) {
-    return text.replace(/^TOOL_ERROR:\s*/, "Error: ");
-  }
-
+function formatStructuredBlob(text: string): string | null {
   try {
     const data = JSON.parse(text);
     if (Array.isArray(data)) {
-      return data.map((item, index) => `${index + 1}. ${String(item)}`).join("\n");
+      return data
+        .map((item, index) => {
+          if (item && typeof item === "object") {
+            const row = item as Record<string, unknown>;
+            const title = String(row.title || row.name || `Item ${index + 1}`);
+            const action = row.action != null ? String(row.action) : "";
+            return action ? `${index + 1}. **${title}** — ${action}` : `${index + 1}. **${title}**`;
+          }
+          return `${index + 1}. ${String(item)}`;
+        })
+        .join("\n");
     }
     if (data && typeof data === "object") {
       return Object.entries(data as Record<string, unknown>)
@@ -19,9 +22,28 @@ export function formatToolResult(raw: string): string {
   } catch {
     // not JSON
   }
+  return null;
+}
 
-  // Already a long blob — keep chat scannable
-  if (text.length > 900) return `${text.slice(0, 900)}…`;
+/** Full agent / assistant answers — never truncate with "…". */
+export function formatAgentOutput(raw: string): string {
+  const text = String(raw || "").trim();
+  if (!text) return "No output.";
+  return formatStructuredBlob(text) ?? text;
+}
+
+/** Compact tool payloads — may truncate long dumps in the tool drawer. */
+export function formatToolResult(raw: string): string {
+  const text = String(raw || "").trim();
+  if (!text) return "No output.";
+  if (text.startsWith("TOOL_ERROR:")) {
+    return text.replace(/^TOOL_ERROR:\s*/, "Error: ");
+  }
+
+  const structured = formatStructuredBlob(text);
+  if (structured) return structured;
+
+  if (text.length > 4000) return `${text.slice(0, 4000)}…`;
   return text;
 }
 

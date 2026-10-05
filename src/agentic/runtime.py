@@ -108,6 +108,10 @@ def run_agentic(
         model=planner_model,
     )
     result.plan = _parse_plan(plan_raw)
+    plan_md = "\n".join(
+        f"{i}. **{step.get('title') or f'Step {i}'}** — {step.get('action') or ''}".strip(" —")
+        for i, step in enumerate(result.plan, start=1)
+    ) or "_No steps planned._"
     _emit(
         on_progress,
         {
@@ -118,7 +122,7 @@ def run_agentic(
             "stage": "agentic",
             "accent": "#6b8cae",
             "elapsed_seconds": 0,
-            "output": json.dumps(result.plan, indent=2),
+            "output": plan_md,
         },
     )
 

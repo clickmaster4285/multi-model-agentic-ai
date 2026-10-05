@@ -756,7 +756,7 @@ body {
 
 .msg-card {
   min-width: 0;
-  max-width: min(48rem, 100%);
+  max-width: min(78rem, 100%);
   border: 1px solid var(--line);
   border-radius: 0.55rem;
   background: rgba(34, 41, 51, 0.92);

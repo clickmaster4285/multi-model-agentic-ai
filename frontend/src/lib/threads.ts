@@ -1,5 +1,7 @@
 /** Client-side chat threads so one chat can hold many jobs/messages. */
 
+import { newId } from "@/lib/id";
+
 export type ChatThread = {
   id: string;
   title: string;
@@ -71,7 +73,7 @@ export function getThread(id: string, includeDeleted = false): ChatThread | null
 
 export function createThread(title = "New chat", projectId: string | null = null): ChatThread {
   const thread: ChatThread = {
-    id: crypto.randomUUID(),
+    id: newId(),
     title: title.trim() || "New chat",
     jobIds: [],
     projectId,
@@ -161,7 +163,7 @@ export function ensureThreadsForJobs(
     if (job.deleted_at) continue;
     if (seen.has(job.id)) continue;
     threads.push({
-      id: crypto.randomUUID(),
+      id: newId(),
       title: job.query.trim().slice(0, 42) || "Chat",
       jobIds: [job.id],
       projectId: null,
