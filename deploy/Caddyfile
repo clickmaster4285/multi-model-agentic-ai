@@ -1,0 +1,24 @@
+# Hybrid LAN / TLS reverse proxy for MulteAgent
+# Point team DNS or hosts file at this machine, then open https://multeagent.local
+
+{
+	# For LAN self-signed / internal CA, replace with your TLS settings.
+	# auto_https disable_redirects
+}
+
+multeagent.local {
+	# TLS hook: use internal for LAN testing; swap to real certs in cloud.
+	tls internal
+
+	encode gzip
+
+	# Next.js front (run separately or put behind another upstream)
+	# For API-only compose demo, proxy API under /api and serve a note at /
+	handle /api/* {
+		reverse_proxy api:8787
+	}
+
+	handle {
+		respond "MulteAgent API is behind /api. Serve Next.js production on this host or proxy :3000 here." 200
+	}
+}

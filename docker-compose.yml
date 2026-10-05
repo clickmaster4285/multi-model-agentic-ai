@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: multeagent
+      POSTGRES_PASSWORD: multeagent
+      POSTGRES_DB: multeagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://multeagent:multeagent@db:5432/multeagent
+      LLM_BASE_URL: http://host.docker.internal:11434
+      JWT_SECRET: change-me-in-production
+      API_HOST: 0.0.0.0
+      API_PORT: 8787
+    ports:
+      - "8787:8787"
+    depends_on:
+      - db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "worker_main.py"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://multeagent:multeagent@db:5432/multeagent
+      LLM_BASE_URL: http://host.docker.internal:11434
+      LLM_SLOTS: "1"
+    depends_on:
+      - db
+      - api
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Scale horizontally: docker compose up --scale worker=3
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  caddy_data:

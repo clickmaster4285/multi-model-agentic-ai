@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MulteAgent — Control Deck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <h1>MulteAgent</h1>
+          <p class="brand-sub">Local consensus control deck</p>
+        </div>
+      </div>
+      <div class="status-cluster" id="healthStatus">
+        <span class="dot"></span>
+        <span class="status-text">Checking LLM…</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="rail" aria-label="Agent management">
+        <div class="rail-head">
+          <h2>Agents</h2>
+          <button type="button" class="btn ghost" id="btnNewAgent">New</button>
+        </div>
+        <p class="hint">Panel agents can run in parallel. Consensus waits until the panel finishes.</p>
+        <ul class="agent-list" id="agentList"></ul>
+        <div class="rail-actions">
+          <button type="button" class="btn ghost full" id="btnResetAgents">Restore defaults</button>
+        </div>
+      </aside>
+
+      <section class="stage" aria-label="Debate chat">
+        <div class="stage-toolbar">
+          <label class="mode-switch" title="Parallel fires panel agents at once. On 8GB VRAM, sequential is safer.">
+            <input type="checkbox" id="parallelToggle" />
+            <span class="switch-ui" aria-hidden="true"></span>
+            <span class="switch-label">
+              <strong id="modeLabel">Sequential</strong>
+              <small id="modeHint">VRAM-safe · one agent at a time</small>
+            </span>
+          </label>
+          <button type="button" class="btn ghost" id="btnClearChat">Clear feed</button>
+        </div>
+
+        <div class="feed" id="feed" role="log" aria-live="polite"></div>
+
+        <form class="composer" id="debateForm">
+          <label class="sr-only" for="queryInput">Business question</label>
+          <textarea
+            id="queryInput"
+            rows="3"
+            placeholder="Ask a business question for the panel to debate…"
+            required
+          ></textarea>
+          <div class="composer-row">
+            <p class="composer-meta" id="selectionMeta">0 panel selected</p>
+            <button type="submit" class="btn primary" id="btnRun">Run debate</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <dialog class="modal" id="agentModal">
+    <form method="dialog" id="agentForm" class="modal-card">
+      <header>
+        <h3 id="modalTitle">New agent</h3>
+        <button type="button" class="icon-btn" id="btnCloseModal" aria-label="Close">×</button>
+      </header>
+      <input type="hidden" id="editAgentId" />
+      <label>
+        Name
+        <input id="fName" required maxlength="80" />
+      </label>
+      <label>
+        Role
+        <input id="fRole" maxlength="120" placeholder="e.g. Financial Analyst" />
+      </label>
+      <label>
+        Stage
+        <select id="fStage">
+          <option value="panel">Panel (can run in parallel)</option>
+          <option value="consensus">Consensus (runs after panel)</option>
+        </select>
+      </label>
+      <label>
+        Accent
+        <input id="fAccent" type="color" value="#6b8cae" />
+      </label>
+      <label>
+        System prompt
+        <textarea id="fPrompt" rows="10" required placeholder="Identity, rules, and strict output format…"></textarea>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="fEnabled" checked />
+        Enabled
+      </label>
+      <footer>
+        <button type="button" class="btn danger ghost" id="btnDeleteAgent" hidden>Delete</button>
+        <div class="footer-right">
+          <button type="button" class="btn ghost" id="btnCancelModal">Cancel</button>
+          <button type="submit" class="btn primary">Save agent</button>
+        </div>
+      </footer>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

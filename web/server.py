@@ -1,0 +1,446 @@
+"""FastAPI gateway: auth, agents, models, jobs, legacy debate."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from src.agent_store import AgentStore
+from src.auth import (
+    bootstrap_admin,
+    create_access_token,
+    get_current_user,
+    get_db,
+    hash_password,
+    require_admin,
+    verify_password,
+)
+from src.config import Config
+from src.db import init_db
+from src.jobs import (
+    cancel_job,
+    create_job,
+    estimate_wait_seconds,
+    get_job,
+    job_to_dict,
+    list_events_after,
+    queue_depth,
+)
+from src.llm_client import LLMClient
+from src.model_registry import list_models, sync_models_from_ollama
+from src.models_db import Job, ModelRecord, User
+from src.worker import start_inprocess_worker
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+store = AgentStore()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    from src.db import session_scope
+
+    config = Config.from_env()
+    config.log_dir.mkdir(parents=True, exist_ok=True)
+    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    init_db(config)
+    bootstrap_admin(config)
+    with session_scope(config) as session:
+        sync_models_from_ollama(session, config)
+    start_inprocess_worker(config)
+    yield
+
+
+app = FastAPI(title="MulteAgent API", version="0.4.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+class RegisterPayload(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=6, max_length=128)
+
+
+class AgentPayload(BaseModel):
+    name: str
+    role: str = ""
+    system_prompt: str
+    stage: Literal["panel", "consensus"] = "panel"
+    enabled: bool = True
+    sort_order: int | None = None
+    accent: str = "#6b8cae"
+
+
+class AgentUpdatePayload(BaseModel):
+    name: str | None = None
+    role: str | None = None
+    system_prompt: str | None = None
+    stage: Literal["panel", "consensus"] | None = None
+    enabled: bool | None = None
+    sort_order: int | None = None
+    accent: str | None = None
+
+
+class JobCreatePayload(BaseModel):
+    query: str = Field(min_length=1)
+    mode: Literal["debate", "agentic", "mixed"] = "debate"
+    execution_mode: Literal["parallel", "sequential"] = "sequential"
+    agent_ids: list[str] | None = None
+    model: str | None = None
+    allow_overflow: bool = True
+    priority: int = 100
+
+
+class ModelUpdatePayload(BaseModel):
+    enabled: bool | None = None
+    role: Literal["fast", "strong", "cloud", "general"] | None = None
+    vram_class: Literal["small", "medium", "large"] | None = None
+    max_concurrency: int | None = None
+
+
+class DebateRequest(BaseModel):
+    query: str = Field(min_length=1)
+    mode: Literal["parallel", "sequential"] = "sequential"
+    agent_ids: list[str] | None = None
+
+
+@app.get("/api/health")
+def health(db: Session = Depends(get_db)) -> dict[str, Any]:
+    config = Config.from_env()
+    client = LLMClient(config)
+    return {
+        "ok": True,
+        "llm_reachable": client.ping(),
+        "model": config.llm_model,
+        "base_url": config.llm_base_url,
+        "queue_depth": queue_depth(db),
+        "estimated_wait_seconds": estimate_wait_seconds(db, config),
+        "llm_slots": config.llm_slots,
+        "sso_enabled": config.sso_enabled,
+        "auth_required": True,
+    }
+
+
+@app.get("/api/auth/sso/status")
+def sso_status() -> dict[str, Any]:
+    config = Config.from_env()
+    return {
+        "enabled": config.sso_enabled,
+        "message": (
+            "SSO hook ready — set SSO_ENABLED=true and wire your IdP callback in a future deploy."
+            if config.sso_enabled
+            else "SSO disabled. Using local JWT accounts."
+        ),
+    }
+
+
+@app.post("/api/auth/login")
+def login(payload: LoginPayload, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = db.scalar(select(User).where(User.username == payload.username))
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    token = create_access_token(user)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {"id": user.id, "username": user.username, "role": user.role},
+    }
+
+
+@app.post("/api/auth/register")
+def register(payload: RegisterPayload, db: Session = Depends(get_db)) -> dict[str, Any]:
+    exists = db.scalar(select(User).where(User.username == payload.username))
+    if exists:
+        raise HTTPException(status_code=400, detail="Username already taken")
+    user = User(
+        username=payload.username.strip(),
+        password_hash=hash_password(payload.password),
+        role="member",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    token = create_access_token(user)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {"id": user.id, "username": user.username, "role": user.role},
+    }
+
+
+@app.get("/api/auth/me")
+def me(user: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "daily_job_quota": user.daily_job_quota,
+    }
+
+
+@app.get("/api/agents")
+def list_agents(_user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
+    return [a.to_dict() for a in store.load_all()]
+
+
+@app.post("/api/agents")
+def create_agent(
+    payload: AgentPayload, _user: User = Depends(get_current_user)
+) -> dict[str, Any]:
+    try:
+        agent = store.create(payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return agent.to_dict()
+
+
+@app.put("/api/agents/{agent_id}")
+def update_agent(
+    agent_id: str,
+    payload: AgentUpdatePayload,
+    _user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        agent = store.update(agent_id, payload.model_dump(exclude_none=True))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return agent.to_dict()
+
+
+@app.delete("/api/agents/{agent_id}")
+def delete_agent(agent_id: str, _user: User = Depends(get_current_user)) -> dict[str, str]:
+    try:
+        store.delete(agent_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "deleted", "id": agent_id}
+
+
+@app.post("/api/agents/reset")
+def reset_agents(_user: User = Depends(require_admin)) -> list[dict[str, Any]]:
+    return [a.to_dict() for a in store.reset_defaults()]
+
+
+@app.get("/api/models")
+def get_models(
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    if refresh:
+        sync_models_from_ollama(db, Config.from_env())
+        db.commit()
+    return list_models(db)
+
+
+@app.patch("/api/models/{model_name:path}")
+def patch_model(
+    model_name: str,
+    payload: ModelUpdatePayload,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> dict[str, Any]:
+    row = db.scalar(select(ModelRecord).where(ModelRecord.name == model_name))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    data = payload.model_dump(exclude_none=True)
+    for key, value in data.items():
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    return {
+        "name": row.name,
+        "backend": row.backend,
+        "vram_class": row.vram_class,
+        "role": row.role,
+        "max_concurrency": row.max_concurrency,
+        "enabled": row.enabled,
+    }
+
+
+@app.post("/api/jobs")
+def create_job_endpoint(
+    payload: JobCreatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    config = Config.from_env()
+    try:
+        job = create_job(
+            db,
+            user=user,
+            query=payload.query,
+            mode=payload.mode,
+            payload={
+                "execution_mode": payload.execution_mode,
+                "agent_ids": payload.agent_ids,
+                "model": payload.model,
+                "allow_overflow": payload.allow_overflow,
+            },
+            config=config,
+            priority=payload.priority if user.role == "admin" else 100,
+        )
+        db.commit()
+        db.refresh(job)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job_to_dict(job)
+
+
+@app.get("/api/jobs")
+def list_jobs(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    stmt = select(Job).order_by(Job.created_at.desc()).limit(min(limit, 100))
+    if user.role != "admin":
+        stmt = stmt.where(Job.user_id == user.id)
+    return [job_to_dict(j) for j in db.scalars(stmt).all()]
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job_endpoint(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    job = get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if user.role != "admin" and job.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return job_to_dict(job)
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job_endpoint(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    job = get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if user.role != "admin" and job.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        job = cancel_job(db, job)
+        db.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return job_to_dict(job)
+
+
+@app.get("/api/jobs/{job_id}/events")
+async def job_events_stream(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    job = get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if user.role != "admin" and job.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    async def event_generator():
+        from src.db import session_scope
+
+        last_seq = 0
+        terminal = {"succeeded", "failed", "cancelled"}
+        idle_rounds = 0
+        while True:
+            with session_scope() as session:
+                current = get_job(session, job_id)
+                if current is None:
+                    yield f"data: {json.dumps({'type': 'fatal', 'error': 'Job missing'})}\n\n"
+                    break
+                rows = list_events_after(session, job_id, last_seq)
+                status = current.status
+            for row in rows:
+                last_seq = row.seq
+                yield f"data: {row.event_json}\n\n"
+            if status in terminal:
+                idle_rounds = idle_rounds + 1 if not rows else 0
+                if idle_rounds >= 2:
+                    break
+            await asyncio.sleep(0.4)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/debate")
+def debate_compat(
+    payload: DebateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Backward-compatible: enqueue a debate job instead of inline streaming."""
+    try:
+        job = create_job(
+            db,
+            user=user,
+            query=payload.query,
+            mode="debate",
+            payload={
+                "execution_mode": payload.mode,
+                "agent_ids": payload.agent_ids,
+                "allow_overflow": True,
+            },
+            config=Config.from_env(),
+        )
+        db.commit()
+        db.refresh(job)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job_to_dict(job)
+
+
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def main() -> None:
+    import uvicorn
+
+    config = Config.from_env()
+    uvicorn.run("web.server:app", host=config.api_host, port=config.api_port, reload=False)
+
+
+if __name__ == "__main__":
+    main()
