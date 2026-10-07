@@ -38,6 +38,12 @@ class Config:
     model_cloud: str
     model_vision: str
     model_image: str
+    model_image_path: Path | None
+    image_width: int
+    image_height: int
+    image_steps: int
+    image_guidance: float
+    image_negative_prompt: str
     remote_llm_base_url: str
     remote_llm_api_key: str
     http_allowlist: str
@@ -52,6 +58,14 @@ class Config:
     def from_env(cls) -> Config:
         data_dir = ROOT / "data"
         default_db = f"sqlite:///{(data_dir / 'multeagent.db').as_posix()}"
+        default_ckpt = ROOT / "models" / "checkpoints" / "sd_xl_base_1.0.safetensors"
+        raw_image_path = (os.getenv("MODEL_IMAGE_PATH") or "").strip()
+        if raw_image_path:
+            image_path = Path(raw_image_path)
+        elif default_ckpt.is_file():
+            image_path = default_ckpt
+        else:
+            image_path = None
         return cls(
             llm_base_url=os.getenv("LLM_BASE_URL", "http://localhost:11434").rstrip("/"),
             llm_model=os.getenv("LLM_MODEL", "llama3.1:latest"),
@@ -72,7 +86,16 @@ class Config:
             model_strong=os.getenv("MODEL_STRONG", "llama3.1:latest"),
             model_cloud=os.getenv("MODEL_CLOUD", ""),
             model_vision=os.getenv("MODEL_VISION", "llava:7b"),
-            model_image=os.getenv("MODEL_IMAGE", ""),
+            model_image=os.getenv("MODEL_IMAGE", "sdxl-local"),
+            model_image_path=image_path,
+            image_width=max(256, int(os.getenv("IMAGE_WIDTH", "768"))),
+            image_height=max(256, int(os.getenv("IMAGE_HEIGHT", "768"))),
+            image_steps=max(1, int(os.getenv("IMAGE_STEPS", "25"))),
+            image_guidance=float(os.getenv("IMAGE_GUIDANCE", "7.0")),
+            image_negative_prompt=os.getenv(
+                "IMAGE_NEGATIVE_PROMPT",
+                "lowres, blurry, distorted, watermark, text, logo",
+            ),
             remote_llm_base_url=os.getenv("REMOTE_LLM_BASE_URL", "").rstrip("/"),
             remote_llm_api_key=os.getenv("REMOTE_LLM_API_KEY", ""),
             http_allowlist=os.getenv(
@@ -108,6 +131,12 @@ class Config:
             model_cloud=self.model_cloud,
             model_vision=self.model_vision,
             model_image=self.model_image,
+            model_image_path=self.model_image_path,
+            image_width=self.image_width,
+            image_height=self.image_height,
+            image_steps=self.image_steps,
+            image_guidance=self.image_guidance,
+            image_negative_prompt=self.image_negative_prompt,
             remote_llm_base_url=self.remote_llm_base_url,
             remote_llm_api_key=self.remote_llm_api_key,
             http_allowlist=self.http_allowlist,

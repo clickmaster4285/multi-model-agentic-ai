@@ -1,0 +1,19 @@
+# Pascal GPUs (Quadro P4000 / compute 6.1): install THESE instead of default torch.
+# Requires Python 3.11–3.13 (no cu118 wheels for 3.14+).
+# From repo root, with .venv active:
+#   pip install -r requirements-image-cu118.txt
+#
+# Do NOT use torch+cu124/cu130 on Pascal — you get:
+#   CUDA error: no kernel image is available for execution on the device
+
+--index-url https://download.pytorch.org/whl/cu118
+--extra-index-url https://pypi.org/simple
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
+diffusers>=0.31.0
+transformers>=4.44.0
+accelerate>=0.33.0
+safetensors>=0.4.0
+Pillow>=10.0.0
+sentencepiece>=0.2.0
+protobuf>=4.0.0

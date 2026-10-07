@@ -15,9 +15,12 @@ Local-first, framework-free multi-agent system with:
 
 ```bash
 cd D:\multeagent
+# Prefer Python 3.11–3.13 (3.14 has no torch+cu118 wheels for Pascal GPUs)
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
+# On Quadro P4000 / Pascal: also pin CUDA 11.8 torch (see Image generation below)
+pip install -r requirements-image-cu118.txt
 copy .env.example .env
 
 # Terminal 1 — API + in-process worker
@@ -31,6 +34,21 @@ npm run dev
 
 Open the Next.js URL, sign in with `admin` / `admin123`.  
 (Multi-user accounts are deferred — admin-only for testing right now.)
+
+## Image generation (local SDXL)
+
+Chat prompts like “create an image of …” route to in-process **Hugging Face Diffusers** (no ComfyUI/Ollama image API at runtime).
+
+1. Place `sd_xl_base_1.0.safetensors` in `models/checkpoints/` (or set `MODEL_IMAGE_PATH`).
+2. **Pascal GPUs (Quadro P4000, compute 6.1):** install the CUDA 11.8 wheel — newer cu124/cu130 builds fail with `no kernel image is available`:
+
+```bash
+pip install -r requirements-image-cu118.txt
+```
+
+3. Defaults are **768×768**, 25 steps, fp16 + model CPU offload + VAE slicing (fits ~8GB VRAM). Prefer ≥32GB system RAM/pagefile when offloading.
+4. Image jobs share `LLM_SLOTS` with chat — unload large Ollama models before generating if VRAM is tight.
+5. First load may download tokenizer/config pieces into the HF cache (online once), then reuse.
 
 ## Architecture (short)
 
@@ -84,6 +102,7 @@ python main.py --parallel "Your question"
 - `LLM_SLOTS=1` for 8GB GPUs
 - Model roles: `MODEL_FAST`, `MODEL_STRONG`, optional `MODEL_CLOUD`
 - Vision: `MODEL_VISION=llava:7b` — used whenever a message has images
+- Image gen: `MODEL_IMAGE_PATH` → local SDXL; `IMAGE_WIDTH`/`IMAGE_HEIGHT` default 768
 
 ## Chat UI
 

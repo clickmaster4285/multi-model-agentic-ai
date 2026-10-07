@@ -1,29 +1,38 @@
-"""Text-to-image via Ollama's experimental OpenAI-compatible images API."""
+"""Text-to-image via in-process Diffusers SDXL (local checkpoint)."""
 
 from __future__ import annotations
 
 import base64
+import io
 import time
 from typing import Any, Callable
 
 from src.attachments import save_images
 from src.config import Config
-from src.llm_client import LLMClient, LLMError
 from src.llm_lock import llm_slot
+from src.sdxl_pipeline import (
+    ImageGenCudaError,
+    ImageGenNotConfigured,
+    generate as sdxl_generate,
+)
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 
-NO_IMAGE_MODEL = """This request needs an **image generation** model.
+NO_CHECKPOINT = """This request needs **local SDXL image generation**.
 
-`llava` and other **· vision** models can **look at** a picture you attach. They cannot **draw** a new one. Chat models only write text, which is why you got a Midjourney-style prompt instead of a seahorse.
-
-None of the models currently loaded in Ollama generate images. Pull a generator, then retry:
+Set `MODEL_IMAGE_PATH` in `.env` to your SDXL checkpoint (`.safetensors`), for example:
 
 ```
-ollama pull x/z-image-turbo
+MODEL_IMAGE_PATH=D:/multeagent/models/checkpoints/sd_xl_base_1.0.safetensors
 ```
 
-Then pick it in the model menu (it will show **· image gen**) or leave Auto model route on."""
+On Quadro P4000 / Pascal GPUs install the CUDA 11.8 PyTorch stack:
+
+```
+pip install -r requirements-image-cu118.txt
+```
+
+Then restart the API and try again. Vision models (`llava`) can only **look at** images — they cannot draw new ones."""
 
 
 def _emit(cb: ProgressCallback | None, event: dict[str, Any]) -> None:
@@ -47,6 +56,7 @@ def looks_like_image_gen_model(name: str) -> bool:
             "dall-e",
             "dalle",
             "gpt-image",
+            "sdxl-local",
         )
     )
 
@@ -62,7 +72,9 @@ def run_image_gen(
     """Return (message, saved attachment dicts, errors, seconds)."""
     config = config or Config.from_env()
     model_plan = model_plan or {}
-    model = (model_plan.get("image") or config.model_image or "").strip()
+    label = (
+        (model_plan.get("image") or config.model_image or "sdxl-local")
+    ).strip() or "sdxl-local"
     started = time.perf_counter()
     errors: list[str] = []
     saved: list[dict[str, str]] = []
@@ -74,36 +86,58 @@ def run_image_gen(
             "type": "agent_start",
             "agent_id": "assistant",
             "name": "Assistant",
-            "role": "Image generation" if model else "Direct reply",
+            "role": "Image generation",
             "stage": "chat",
             "accent": "#c4a35a",
-            "model": model or None,
+            "model": label,
             "job_id": job_id,
         },
     )
 
-    output = NO_IMAGE_MODEL
-    if model:
-        client = LLMClient(config)
+    output = NO_CHECKPOINT
+    path = config.model_image_path
+    if path is not None and path.is_file():
         try:
             with llm_slot(config):
-                png = client.generate_image(prompt=query, model=model)
+                image = sdxl_generate(query, config=config)
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            png = buf.getvalue()
             stored = save_images(
                 config,
                 job_id,
-                [{"filename": "generated.png", "mime": "image/png", "data": base64.b64encode(png).decode("ascii")}],
+                [
+                    {
+                        "filename": "generated.png",
+                        "mime": "image/png",
+                        "data": base64.b64encode(png).decode("ascii"),
+                    }
+                ],
             )
             for row in stored:
                 row["kind"] = "generated"
             saved = stored
-            output = f"Generated with `{model}`."
+            output = (
+                f"Generated with local SDXL (`{label}`) "
+                f"at {config.image_width}×{config.image_height}, "
+                f"{config.image_steps} steps."
+            )
+        except ImageGenNotConfigured as exc:
+            errors.append(str(exc))
+            output = str(exc)
+        except ImageGenCudaError as exc:
+            errors.append(str(exc))
+            output = str(exc)
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
             output = (
-                f"Image generation failed with `{model}`: {exc}\n\n"
-                "Vision/chat models cannot draw pictures. Use an image-generation model "
-                "such as `x/z-image-turbo`."
+                f"Image generation failed: {exc}\n\n"
+                "On 8GB GPUs keep IMAGE_WIDTH/IMAGE_HEIGHT at 768 (not 1024). "
+                "Unload large Ollama models before generating. "
+                "Pascal GPUs need: pip install -r requirements-image-cu118.txt"
             )
+    else:
+        errors.append("MODEL_IMAGE_PATH not set or file missing")
 
     elapsed = time.perf_counter() - started
     _emit(
@@ -118,7 +152,10 @@ def run_image_gen(
             "elapsed_seconds": elapsed,
             "output": output,
             "job_id": job_id,
-            "images": [{"filename": a["filename"], "mime": a.get("mime") or "image/png"} for a in saved],
+            "images": [
+                {"filename": a["filename"], "mime": a.get("mime") or "image/png"}
+                for a in saved
+            ],
         },
     )
     _emit(
