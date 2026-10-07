@@ -2,11 +2,15 @@
 
 import {
   FormEvent,
+  KeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
+  type ClipboardEvent,
+  type DragEvent,
   type MouseEvent,
 } from "react";
 import {
@@ -15,6 +19,7 @@ import {
   createAgent,
   createJob,
   deleteAgent,
+  fetchJobAttachment,
   getHealth,
   getJobHistory,
   getToken,
@@ -39,6 +44,7 @@ import type {
   Job,
   ModelInfo,
   RunMode,
+  ChatImage,
 } from "@/lib/types";
 import MarkdownBody from "@/components/MarkdownBody";
 import MessageAvatar from "@/components/MessageAvatar";
@@ -69,6 +75,7 @@ import {
   softDeleteThread,
   type ChatThread,
 } from "@/lib/threads";
+import { newId } from "@/lib/id";
 
 const emptyForm: AgentInput = {
   name: "",
@@ -82,6 +89,150 @@ const emptyForm: AgentInput = {
 function titleFromQuery(query: string) {
   const t = query.trim().replace(/\s+/g, " ");
   return t.length > 42 ? `${t.slice(0, 42)}…` : t || "Untitled chat";
+}
+
+type PendingImage = {
+  id: string;
+  file: File;
+  url: string;
+  mime: string;
+};
+
+const MAX_CHAT_IMAGES = 4;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error("Could not read image"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function chatImagesToPending(images?: ChatImage[]): Promise<PendingImage[]> {
+  if (!images?.length) return [];
+  const out: PendingImage[] = [];
+  for (const img of images) {
+    try {
+      const res = await fetch(img.url);
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      const file = new File([blob], img.filename || "image.png", {
+        type: img.mime || blob.type || "image/png",
+      });
+      out.push({
+        id: newId(),
+        file,
+        url: URL.createObjectURL(file),
+        mime: file.type,
+      });
+    } catch {
+      // skip images we cannot reload
+    }
+  }
+  return out;
+}
+
+function IconPaperclip() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconSend() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M3.2 21.4 22 12 3.2 2.6 3 10.1 15 12 3 13.9z" />
+    </svg>
+  );
+}
+
+async function attachmentsFromJob(job: Job): Promise<ChatImage[]> {
+  const raw = job.payload?.attachments;
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const out: ChatImage[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const kind = String((item as { kind?: string }).kind || "user");
+    if (kind === "generated") continue;
+    const filename = String((item as { filename?: string }).filename || "");
+    if (!filename) continue;
+    try {
+      const url = await fetchJobAttachment(job.id, filename);
+      out.push({
+        url,
+        filename,
+        mime: String((item as { mime?: string }).mime || "image/jpeg"),
+      });
+    } catch {
+      // skip missing files
+    }
+  }
+  return out;
+}
+
+function AgentThumbs({
+  item,
+  fallbackJobId,
+}: {
+  item: FeedItem;
+  fallbackJobId: string | null;
+}) {
+  const jobId = item.jobId || fallbackJobId;
+  const [imgs, setImgs] = useState<ChatImage[]>(item.images || []);
+  useEffect(() => {
+    if (item.images && item.images.length > 0) {
+      setImgs(item.images);
+      return;
+    }
+    const files = item.imageFiles;
+    if (!files?.length || !jobId) return;
+    let cancelled = false;
+    (async () => {
+      const out: ChatImage[] = [];
+      for (const file of files) {
+        if (!file.filename) continue;
+        try {
+          const url = await fetchJobAttachment(jobId, file.filename);
+          out.push({
+            url,
+            filename: file.filename,
+            mime: file.mime || "image/png",
+          });
+        } catch {
+          // skip
+        }
+      }
+      if (!cancelled) setImgs(out);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, item.images, item.imageFiles]);
+  if (!imgs.length) return null;
+  return (
+    <div className="chat-thumbs">
+      {imgs.map((img) => (
+        <a key={img.url} href={img.url} target="_blank" rel="noreferrer">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={img.url} alt={img.filename} />
+        </a>
+      ))}
+    </div>
+  );
 }
 
 export default function ControlDeck() {
@@ -104,6 +255,10 @@ export default function ControlDeck() {
   const [modelOverride, setModelOverride] = useState("");
   const [allowOverflow, setAllowOverflow] = useState(true);
   const [query, setQuery] = useState("");
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const queryRef = useRef<HTMLTextAreaElement | null>(null);
+  const [editingFromId, setEditingFromId] = useState<string | null>(null);
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [chatTitle, setChatTitle] = useState("New chat");
   const [running, setRunning] = useState(false);
@@ -172,7 +327,13 @@ export default function ControlDeck() {
   }, []);
 
   const refreshModels = useCallback(async (refresh = false) => {
-    setModels(await listModels(refresh));
+    const data = await listModels(refresh);
+    setModels(data);
+    const live = new Set(
+      data.filter((m) => m.enabled && m.available !== false).map((m) => m.name),
+    );
+    setModelOverride((prev) => (prev && !live.has(prev) ? "" : prev));
+    return data;
   }, []);
 
   const refreshJobs = useCallback(async () => {
@@ -208,7 +369,8 @@ export default function ControlDeck() {
         for (const jobId of thread.jobIds) {
           try {
             const history = await getJobHistory(jobId);
-            const slice = buildFeedFromEvents(history.events, history.job.query).filter(
+            const images = await attachmentsFromJob(history.job);
+            const slice = buildFeedFromEvents(history.events, history.job.query, images).filter(
               (item) => item.id !== STATUS_ID,
             );
             built = [
@@ -216,7 +378,7 @@ export default function ControlDeck() {
               ...slice.map((item) =>
                 item.kind === "user"
                   ? { ...item, meta: `${history.job.mode} · ${history.job.status}` }
-                  : item,
+                  : { ...item, jobId: item.jobId || history.job.id },
               ),
             ];
           } catch (err) {
@@ -264,9 +426,12 @@ export default function ControlDeck() {
 
   useEffect(() => {
     refreshHealth();
-    const timer = setInterval(refreshHealth, 15000);
+    const timer = setInterval(() => {
+      void refreshHealth();
+      if (getToken()) void refreshModels(false);
+    }, 15000);
     return () => clearInterval(timer);
-  }, [refreshHealth]);
+  }, [refreshHealth, refreshModels]);
 
   useEffect(() => {
     setProjects(listProjects());
@@ -333,9 +498,32 @@ export default function ControlDeck() {
     selectThreadId(thread.id);
     setFeed([]);
     setQuery("");
+    setPendingImages([]);
+    setEditingFromId(null);
     setActiveJobId(null);
     setChatTitle("New chat");
     setRunning(false);
+  }
+
+  function cancelComposerEdit() {
+    setEditingFromId(null);
+    setQuery("");
+    setPendingImages((prev) => {
+      prev.forEach((img) => URL.revokeObjectURL(img.url));
+      return [];
+    });
+  }
+
+  async function beginEdit(item: FeedItem) {
+    setEditingFromId(item.id);
+    setQuery(item.body === "What's in this image?" ? "" : item.body);
+    setPendingImages((prev) => {
+      prev.forEach((img) => URL.revokeObjectURL(img.url));
+      return [];
+    });
+    const reloaded = await chatImagesToPending(item.images);
+    setPendingImages(reloaded);
+    queryRef.current?.focus();
   }
 
   async function handleDeleteThread(thread: ChatThread, event: MouseEvent) {
@@ -434,11 +622,61 @@ export default function ControlDeck() {
     await loadAgents();
   }
 
-  async function runDebate(event: FormEvent) {
+  function addImageFiles(files: File[]) {
+    const accepted: PendingImage[] = [];
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size > MAX_IMAGE_BYTES) {
+        alert(`“${file.name}” is over 5MB.`);
+        continue;
+      }
+      accepted.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        file,
+        url: URL.createObjectURL(file),
+        mime: file.type || "image/png",
+      });
+    }
+    if (accepted.length === 0) return;
+    setPendingImages((prev) => {
+      const next = [...prev, ...accepted];
+      if (next.length > MAX_CHAT_IMAGES) {
+        next.slice(MAX_CHAT_IMAGES).forEach((img) => URL.revokeObjectURL(img.url));
+        return next.slice(0, MAX_CHAT_IMAGES);
+      }
+      return next;
+    });
+  }
+
+  function removePendingImage(id: string) {
+    setPendingImages((prev) => {
+      const hit = prev.find((img) => img.id === id);
+      if (hit) URL.revokeObjectURL(hit.url);
+      return prev.filter((img) => img.id !== id);
+    });
+  }
+
+  function onComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = [...(event.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+    if (files.length === 0) return;
     event.preventDefault();
+    addImageFiles(files);
+  }
+
+  function onComposerDrop(event: DragEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const files = [...(event.dataTransfer?.files || [])].filter((f) => f.type.startsWith("image/"));
+    if (files.length) addImageFiles(files);
+  }
+
+  async function submitMessage(
+    text: string,
+    images: PendingImage[],
+    opts: { retry?: boolean } = {},
+  ) {
     if (running) return;
-    const text = query.trim();
-    if (!text) return;
+    const trimmed = text.trim();
+    if (!trimmed && images.length === 0) return;
     if (runMode === "debate" || runMode === "mixed") {
       if (selected.size === 0) {
         alert("Select at least one agent in Settings.");
@@ -448,30 +686,56 @@ export default function ControlDeck() {
     }
 
     let threadId = activeThreadId;
+    const titleSeed = trimmed || images[0]?.file.name || "Image";
     if (!threadId) {
-      const thread = createThread(titleFromQuery(text), projectId);
+      const thread = createThread(titleFromQuery(titleSeed), projectId);
       threadId = thread.id;
-      selectThreadId(threadId);
+      selectThreadId(thread.id);
     }
 
+    const snapshot = images;
+    const chatImages: ChatImage[] = snapshot.map((img) => ({
+      url: img.url,
+      filename: img.file.name,
+      mime: img.mime,
+    }));
     setRunning(true);
-    setChatTitle(titleFromQuery(text));
-    setFeed((prev) =>
-      appendUserMessage(prev, text, `${runMode} · ${parallel ? "parallel" : "sequential"}`),
-    );
+    setEditingFromId(null);
+    setChatTitle(titleFromQuery(titleSeed));
+    if (opts.retry) {
+      setFeed((prev) => upsertStatus(prev, "Regenerating", "Sending the last query again…"));
+    } else {
+      setFeed((prev) =>
+        appendUserMessage(
+          prev,
+          trimmed || "What's in this image?",
+          `${runMode} · ${parallel ? "parallel" : "sequential"}`,
+          chatImages,
+        ),
+      );
+    }
     setQuery("");
+    setPendingImages([]);
 
     try {
+      const payloadImages = await Promise.all(
+        snapshot.map(async (img) => ({
+          filename: img.file.name,
+          mime: img.mime,
+          data: await fileToBase64(img.file),
+        })),
+      );
       const job = await createJob({
-        query: text,
+        query: trimmed,
         mode: runMode,
         execution_mode: parallel ? "parallel" : "sequential",
         agent_ids: [...selected],
         model: modelOverride || undefined,
         allow_overflow: allowOverflow,
+        images: payloadImages,
       });
       setActiveJobId(job.id);
-      setThreads(addJobToThread(threadId, job.id, titleFromQuery(text)));
+      setThreads(addJobToThread(threadId, job.id, titleFromQuery(titleSeed)));
       if (projectId) {
         setProjects(assignJobToProject(projectId, job.id));
       }
@@ -485,6 +749,33 @@ export default function ControlDeck() {
     } finally {
       setRunning(false);
     }
+  }
+
+  async function runDebate(event: FormEvent) {
+    event.preventDefault();
+    await submitMessage(query.trim(), pendingImages);
+  }
+
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Escape" && editingFromId) {
+      event.preventDefault();
+      cancelComposerEdit();
+      return;
+    }
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    void submitMessage(query.trim(), pendingImages);
+  }
+
+  async function retryLast() {
+    const lastUser = [...feed].reverse().find((item) => item.kind === "user");
+    if (!lastUser || running) return;
+    const images = await chatImagesToPending(lastUser.images);
+    await submitMessage(
+      lastUser.body === "What's in this image?" ? "" : lastUser.body,
+      images,
+      { retry: true },
+    );
   }
 
   if (!user) {
@@ -534,6 +825,8 @@ export default function ControlDeck() {
   }
 
   const activeProject = projects.find((p) => p.id === projectId) || null;
+  const lastUserIdx = feed.reduce((acc, item, i) => (item.kind === "user" ? i : acc), -1);
+  const lastAgentIdx = feed.reduce((acc, item, i) => (item.kind === "agent" ? i : acc), -1);
 
   return (
     <div className="chat-app">
@@ -568,40 +861,46 @@ export default function ControlDeck() {
         </div>
 
         {sidebarTab === "projects" ? (
-          <div className="rail-section">
+          <div className="rail-section grow">
             <div className="rail-section-head">
               <h2>Projects</h2>
               <button type="button" className="btn ghost sm" onClick={handleNewProject}>
                 New
               </button>
             </div>
-            <button
-              type="button"
-              className={`nav-item ${projectId ? "" : "active"}`}
-              onClick={() => selectProject(null)}
-            >
-              All chats
-            </button>
-            {projects.map((p) => (
-              <div key={p.id} className={`nav-item row ${projectId === p.id ? "active" : ""}`}>
-                <button type="button" className="nav-main" onClick={() => selectProject(p.id)}>
-                  <strong>{p.name}</strong>
-                  <span>{p.jobIds.length} chats</span>
-                </button>
+            <ul className="history-list">
+              <li>
                 <button
                   type="button"
-                  className="icon-btn"
-                  title="Delete project"
-                  onClick={() => {
-                    if (!confirm(`Delete project “${p.name}”?`)) return;
-                    setProjects(deleteProject(p.id));
-                    if (projectId === p.id) selectProject(null);
-                  }}
+                  className={`nav-item ${projectId ? "" : "active"}`}
+                  onClick={() => selectProject(null)}
                 >
-                  ×
+                  All chats
                 </button>
-              </div>
-            ))}
+              </li>
+              {projects.map((p) => (
+                <li key={p.id}>
+                  <div className={`nav-item row ${projectId === p.id ? "active" : ""}`}>
+                    <button type="button" className="nav-main" onClick={() => selectProject(p.id)}>
+                      <strong>{p.name}</strong>
+                      <span>{p.jobIds.length} chats</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title="Delete project"
+                      onClick={() => {
+                        if (!confirm(`Delete project “${p.name}”?`)) return;
+                        setProjects(deleteProject(p.id));
+                        if (projectId === p.id) selectProject(null);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
           </div>
         ) : (
           <div className="rail-section grow">
@@ -706,10 +1005,10 @@ export default function ControlDeck() {
             <select value={modelOverride} onChange={(e) => setModelOverride(e.target.value)}>
               <option value="">Auto model route</option>
               {models
-                .filter((m) => m.enabled)
+                .filter((m) => m.enabled && m.available !== false)
                 .map((m) => (
                   <option key={m.name} value={m.name}>
-                    {m.name}
+                    {m.image_gen ? `${m.name} · image gen` : m.vision ? `${m.name} · vision` : m.name}
                   </option>
                 ))}
             </select>
@@ -749,7 +1048,8 @@ export default function ControlDeck() {
                 item.kind === "user" &&
                 index > 0 &&
                 feed[index - 1].kind === "user" &&
-                feed[index - 1].body.trim() === item.body.trim()
+                feed[index - 1].body.trim() === item.body.trim() &&
+                !(item.images && item.images.length > 0)
               ) {
                 return null;
               }
@@ -781,10 +1081,49 @@ export default function ControlDeck() {
                           </header>
                         ) : null}
                         {item.kind === "user" ? (
-                          <div className="bubble-body">{item.body}</div>
+                          <div className="bubble-body">
+                            {item.images && item.images.length > 0 ? (
+                              <div className="chat-thumbs">
+                                {item.images.map((img) => (
+                                  <a key={img.url} href={img.url} target="_blank" rel="noreferrer">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img src={img.url} alt={img.filename} />
+                                  </a>
+                                ))}
+                              </div>
+                            ) : null}
+                            {item.body}
+                          </div>
                         ) : (
-                          <MarkdownBody content={item.body} pending={item.pending} />
+                          <>
+                            <AgentThumbs item={item} fallbackJobId={activeJobId} />
+                            <MarkdownBody content={item.body} pending={item.pending} />
+                          </>
                         )}
+                        {item.kind === "user" ||
+                        index === lastAgentIdx ||
+                        (isError && index === feed.length - 1) ? (
+                          <div className="msg-toolbar">
+                            {item.kind === "user" ? (
+                              <button
+                                type="button"
+                                className="msg-action"
+                                disabled={running}
+                                onClick={() => void beginEdit(item)}
+                              >
+                                Edit
+                              </button>
+                            ) : null}
+                            {(index === lastUserIdx ||
+                              index === lastAgentIdx ||
+                              (isError && index === feed.length - 1)) &&
+                            !running ? (
+                              <button type="button" className="msg-action" onClick={() => void retryLast()}>
+                                Retry
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
                         {item.tools && item.tools.length > 0 ? (
                           <details className="tool-drawer">
                             <summary>
@@ -814,26 +1153,90 @@ export default function ControlDeck() {
           )}
         </div>
 
-        <form className="composer chat-composer" onSubmit={runDebate}>
-          <textarea
-            rows={2}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={
-              runMode === "agentic"
-                ? "Describe a goal for the agentic loop…"
-                : runMode === "debate" || runMode === "mixed"
-                  ? "Ask a decision / business question…"
-                  : "Message MulteAgent…"
-            }
-            required
+        <form
+          className="composer chat-composer"
+          onSubmit={runDebate}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={onComposerDrop}
+        >
+          {editingFromId ? (
+            <div className="composer-editing">
+              <span>Editing previous message</span>
+              <button type="button" className="msg-action" onClick={cancelComposerEdit}>
+                Cancel
+              </button>
+            </div>
+          ) : null}
+          {pendingImages.length > 0 ? (
+            <div className="pending-thumbs">
+              {pendingImages.map((img) => (
+                <div key={img.id} className="pending-thumb">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={img.url} alt={img.file.name} />
+                  <button
+                    type="button"
+                    className="icon-btn danger"
+                    title="Remove image"
+                    onClick={() => removePendingImage(img.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            hidden
+            onChange={(e) => {
+              addImageFiles([...(e.target.files || [])]);
+              e.target.value = "";
+            }}
           />
-          <div className="composer-row">
-            <button type="button" className="btn ghost" onClick={() => setSettingsOpen(true)}>
-              {selectionMeta}
+          <div className="composer-bar">
+            <button
+              type="button"
+              className="composer-icon"
+              title="Attach image"
+              aria-label="Attach image"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <IconPaperclip />
             </button>
-            <button type="submit" className="btn primary" disabled={running}>
-              {running ? "Running…" : "Send"}
+            <textarea
+              ref={queryRef}
+              rows={1}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onPaste={onComposerPaste}
+              onKeyDown={onComposerKeyDown}
+              placeholder={
+                pendingImages.length
+                  ? "Ask about the image… (optional)"
+                  : runMode === "agentic"
+                    ? "Describe a goal for the agentic loop…"
+                    : runMode === "debate" || runMode === "mixed"
+                      ? "Ask a decision / business question…"
+                      : "Message MulteAgent — paste or attach an image"
+              }
+              required={pendingImages.length === 0}
+            />
+            <button
+              type="submit"
+              className="composer-send"
+              disabled={running}
+              title={running ? "Running…" : "Send (Enter)"}
+              aria-label={running ? "Running" : "Send"}
+            >
+              <IconSend />
+            </button>
+          </div>
+          <div className="composer-row">
+            <button type="button" className="btn ghost sm" onClick={() => setSettingsOpen(true)}>
+              {selectionMeta}
             </button>
           </div>
         </form>

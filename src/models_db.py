@@ -81,4 +81,7 @@ class ModelRecord(Base):
     role: Mapped[str] = mapped_column(String(20), default="general")  # fast|strong|cloud|general
     max_concurrency: Mapped[int] = mapped_column(Integer, default=1)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    vision: Mapped[bool] = mapped_column(Boolean, default=False)
+    image_gen: Mapped[bool] = mapped_column(Boolean, default=False)
+    available: Mapped[bool] = mapped_column(Boolean, default=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -36,6 +36,8 @@ class Config:
     model_fast: str
     model_strong: str
     model_cloud: str
+    model_vision: str
+    model_image: str
     remote_llm_base_url: str
     remote_llm_api_key: str
     http_allowlist: str
@@ -69,6 +71,8 @@ class Config:
             model_fast=os.getenv("MODEL_FAST", "qwen2.5:3b"),
             model_strong=os.getenv("MODEL_STRONG", "llama3.1:latest"),
             model_cloud=os.getenv("MODEL_CLOUD", ""),
+            model_vision=os.getenv("MODEL_VISION", "llava:7b"),
+            model_image=os.getenv("MODEL_IMAGE", ""),
             remote_llm_base_url=os.getenv("REMOTE_LLM_BASE_URL", "").rstrip("/"),
             remote_llm_api_key=os.getenv("REMOTE_LLM_API_KEY", ""),
             http_allowlist=os.getenv(
@@ -102,6 +106,8 @@ class Config:
             model_fast=self.model_fast,
             model_strong=self.model_strong,
             model_cloud=self.model_cloud,
+            model_vision=self.model_vision,
+            model_image=self.model_image,
             remote_llm_base_url=self.remote_llm_base_url,
             remote_llm_api_key=self.remote_llm_api_key,
             http_allowlist=self.http_allowlist,

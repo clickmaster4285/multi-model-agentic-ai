@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.agent_store import AgentStore
+from src.attachments import image_path
 from src.auth import (
     bootstrap_admin,
     create_access_token,
@@ -57,7 +58,7 @@ async def lifespan(_app: FastAPI):
     init_db(config)
     bootstrap_admin(config)
     with session_scope(config) as session:
-        sync_models_from_ollama(session, config)
+        sync_models_from_ollama(session, config, probe_details=True)
     start_inprocess_worker(config)
     yield
 
@@ -101,14 +102,21 @@ class SoftDeleteJobsPayload(BaseModel):
     job_ids: list[str] = Field(default_factory=list)
 
 
+class ImageAttachmentIn(BaseModel):
+    filename: str = "image.png"
+    mime: str = "image/png"
+    data: str
+
+
 class JobCreatePayload(BaseModel):
-    query: str = Field(min_length=1)
+    query: str = ""
     mode: Literal["auto", "chat", "debate", "agentic", "mixed"] = "auto"
     execution_mode: Literal["parallel", "sequential"] = "sequential"
     agent_ids: list[str] | None = None
     model: str | None = None
     allow_overflow: bool = True
     priority: int = 100
+    images: list[ImageAttachmentIn] = Field(default_factory=list)
 
 
 class ModelUpdatePayload(BaseModel):
@@ -237,9 +245,8 @@ def get_models(
     db: Session = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    if refresh:
-        sync_models_from_ollama(db, Config.from_env())
-        db.commit()
+    sync_models_from_ollama(db, Config.from_env(), probe_details=refresh)
+    db.commit()
     return list_models(db)
 
 
@@ -265,6 +272,9 @@ def patch_model(
         "role": row.role,
         "max_concurrency": row.max_concurrency,
         "enabled": row.enabled,
+        "vision": bool(getattr(row, "vision", False)),
+        "image_gen": bool(getattr(row, "image_gen", False)),
+        "available": bool(getattr(row, "available", True)),
     }
 
 
@@ -286,6 +296,7 @@ def create_job_endpoint(
                 "agent_ids": payload.agent_ids,
                 "model": payload.model,
                 "allow_overflow": payload.allow_overflow,
+                "images": [img.model_dump() for img in payload.images],
             },
             config=config,
             priority=payload.priority if user.role == "admin" else 100,
@@ -398,6 +409,30 @@ def job_events_history(
         except json.JSONDecodeError:
             events.append({"type": "raw", "body": row.event_json})
     return {"job": job_to_dict(job), "events": events}
+
+
+@app.get("/api/jobs/{job_id}/attachments/{filename}")
+def job_attachment(
+    job_id: str,
+    filename: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    job = get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if user.role != "admin" and job.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    payload = json.loads(job.payload_json or "{}")
+    attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+    match = next((a for a in attachments if a.get("filename") == filename), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        path = image_path(Config.from_env(), str(match["relpath"]))
+    except (ValueError, FileNotFoundError, KeyError) as exc:
+        raise HTTPException(status_code=404, detail="Attachment missing") from exc
+    return FileResponse(path, media_type=str(match.get("mime") or "image/jpeg"), filename=filename)
 
 
 @app.get("/api/jobs/{job_id}/events")

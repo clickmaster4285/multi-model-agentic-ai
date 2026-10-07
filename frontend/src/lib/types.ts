@@ -47,6 +47,15 @@ export type ModelInfo = {
   role: string;
   max_concurrency: number;
   enabled: boolean;
+  vision?: boolean;
+  image_gen?: boolean;
+  available?: boolean;
+};
+
+export type ChatImage = {
+  url: string;
+  filename: string;
+  mime: string;
 };
 
 export type Job = {
@@ -88,4 +97,7 @@ export type FeedItem = {
   agentId?: string;
   /** Collapsed tool activity attached to an agent step */
   tools?: ToolStep[];
+  images?: ChatImage[];
+  jobId?: string;
+  imageFiles?: { filename: string; mime?: string }[];
 };

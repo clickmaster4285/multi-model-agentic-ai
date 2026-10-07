@@ -35,15 +35,17 @@ class LLMClient:
         temperature: float | None = None,
         max_retries: int = 2,
         model: str | None = None,
+        images: list[str] | None = None,
     ) -> str:
         cfg = self.config.with_model(model) if model else self.config
         backend = self._infer_backend(cfg.llm_model)
         temp = cfg.temperature if temperature is None else temperature
+        pics = [img for img in (images or []) if img]
 
         with llm_slot(cfg):
             if backend == "remote_openai_compatible":
-                return self._chat_openai_compatible(cfg, system, user, temp, max_retries)
-            return self._chat_ollama(cfg, system, user, temp, max_retries)
+                return self._chat_openai_compatible(cfg, system, user, temp, max_retries, pics)
+            return self._chat_ollama(cfg, system, user, temp, max_retries, pics)
 
     def _chat_ollama(
         self,
@@ -52,15 +54,19 @@ class LLMClient:
         user: str,
         temperature: float,
         max_retries: int,
+        images: list[str] | None = None,
     ) -> str:
         url = f"{cfg.llm_base_url}/api/chat"
+        user_msg: dict[str, Any] = {"role": "user", "content": user}
+        if images:
+            user_msg["images"] = images
         payload: dict[str, Any] = {
             "model": cfg.llm_model,
             "stream": False,
             "options": {"temperature": temperature},
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                user_msg,
             ],
         }
         last_error: Exception | None = None
@@ -90,6 +96,7 @@ class LLMClient:
         user: str,
         temperature: float,
         max_retries: int,
+        images: list[str] | None = None,
     ) -> str:
         base = cfg.remote_llm_base_url or cfg.llm_base_url
         # Ollama cloud models can still use local /v1 endpoint
@@ -100,12 +107,24 @@ class LLMClient:
         headers = {"Content-Type": "application/json"}
         if cfg.remote_llm_api_key:
             headers["Authorization"] = f"Bearer {cfg.remote_llm_api_key}"
+        if images:
+            content: Any = [{"type": "text", "text": user}]
+            for img in images:
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img}"},
+                    }
+                )
+            user_content = content
+        else:
+            user_content = user
         payload = {
             "model": model_name,
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": user_content},
             ],
         }
         last_error: Exception | None = None
@@ -157,3 +176,47 @@ class LLMClient:
         response = requests.get(f"{self.config.llm_base_url}/api/tags", timeout=15)
         response.raise_for_status()
         return list(response.json().get("models") or [])
+
+    def show_model(self, name: str) -> dict[str, Any]:
+        response = requests.post(
+            f"{self.config.llm_base_url}/api/show",
+            json={"model": name},
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    def generate_image(self, *, prompt: str, model: str, size: str = "1024x1024") -> bytes:
+        """Ollama experimental OpenAI-compatible image API (`/v1/images/generations`)."""
+        import base64
+
+        cfg = self.config.with_model(model)
+        url = f"{cfg.llm_base_url}/v1/images/generations"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "size": size,
+            "response_format": "b64_json",
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=cfg.timeout_seconds)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise LLMError(
+                f"Image generation failed at {url} (model={model}). {exc}"
+            ) from exc
+        data = response.json() if response.content else {}
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list) or not rows:
+            raise LLMError("Image API returned no image data.")
+        b64 = str(rows[0].get("b64_json") or "").strip()
+        if not b64:
+            raise LLMError("Image API returned empty b64_json.")
+        try:
+            blob = base64.b64decode(b64, validate=False)
+        except Exception as exc:  # noqa: BLE001
+            raise LLMError("Image API returned invalid base64.") from exc
+        if not blob:
+            raise LLMError("Decoded image was empty.")
+        return blob

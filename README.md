@@ -7,6 +7,7 @@ Local-first, framework-free multi-agent system with:
 - **Debate** (Optimist / Cynic / Consensus)
 - **Agentic** planner → tools → critic loop
 - **Mixed** (agentic research, then debate)
+- **Vision** — paste/attach images; Auto routes to `MODEL_VISION` (default `llava:7b`)
 - **Job queue**, JWT auth, model registry, GPU fairness for 8–15 users
 - Hybrid path: SQLite/LAN now → Postgres + Caddy + workers for cloud
 
@@ -82,3 +83,12 @@ python main.py --parallel "Your question"
 - Admin: `admin` / `admin123` — change immediately
 - `LLM_SLOTS=1` for 8GB GPUs
 - Model roles: `MODEL_FAST`, `MODEL_STRONG`, optional `MODEL_CLOUD`
+- Vision: `MODEL_VISION=llava:7b` — used whenever a message has images
+
+## Chat UI
+
+- **Enter** sends; **Shift+Enter** inserts a new line
+- Paperclip icon attaches images; compact send icon submits
+- **Edit** on a user message loads it into the composer so you can change it and send again
+- **Retry** on the last turn regenerates without duplicating the user bubble
+- Paste or drop images (up to 4, 5MB each)

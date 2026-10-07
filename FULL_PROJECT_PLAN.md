@@ -445,6 +445,16 @@ Job states: `queued → running → succeeded | failed | cancelled`
 
 **Done when:** `hi` and creative asks use chat; decision asks still debate; tool/research asks use agentic.
 
+### Phase C3 — Vision + chat actions (done)
+
+- Image paste/upload in the composer; attachments stored under `artifacts/{job_id}/images`
+- `MODEL_VISION` + Ollama `capabilities` (`vision`) in the model registry
+- Image + query always uses chat + a vision model (`force_vision_model`)
+- Compact composer: attach icon, send icon, **Enter** to send
+- **Edit** previous user message and resend; **Retry** regenerates the last turn
+
+**Done when:** an image question answers with the vision model; Enter sends; edit/retry work in the same thread.
+
 ### Phase D — Cloud-ready hybrid
 
 - Postgres + Docker Compose  

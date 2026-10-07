@@ -164,6 +164,7 @@ export async function createJob(payload: {
   agent_ids: string[];
   model?: string;
   allow_overflow?: boolean;
+  images?: { filename: string; mime: string; data: string }[];
 }): Promise<Job> {
   return request("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
 }
@@ -189,6 +190,16 @@ export async function softDeleteJobs(jobIds: string[]): Promise<{
     method: "POST",
     body: JSON.stringify({ job_ids: jobIds }),
   });
+}
+
+export async function fetchJobAttachment(jobId: string, filename: string): Promise<string> {
+  const response = await fetch(
+    apiUrl(`/api/jobs/${encodeURIComponent(jobId)}/attachments/${encodeURIComponent(filename)}`),
+    { headers: authHeaders(false) },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
 }
 
 export async function getJobHistory(jobId: string): Promise<{

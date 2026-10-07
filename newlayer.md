@@ -213,3 +213,7 @@ Auto + “research this URL and summarize then draft a plan” → agentic
 
 Manual Debate still forces full board even on "hi"
 
+## Follow-on (done)
+
+Vision: image attached → chat + `MODEL_VISION`. Composer: Enter sends, Shift+Enter newline, paperclip attach, compact send. Edit a previous user message to resend; Retry regenerates the last turn in the same thread.
+

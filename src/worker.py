@@ -10,6 +10,8 @@ from typing import Any
 from src.agent_store import AgentStore
 from src.agentic.runtime import run_agentic
 from src.chat_runner import run_chat
+from src.image_gen import run_image_gen
+from src.attachments import load_b64_images
 from src.config import Config
 from src.db import session_scope
 from src.jobs import append_event, claim_next_job, get_job, set_job_status
@@ -53,12 +55,65 @@ def process_job(job_id: str, config: Config | None = None) -> None:
         if route:
             on_progress({"type": "route_decided", **route})
 
+        attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+        has_images = bool(payload.get("has_images") or attachments)
+        images = load_b64_images(config, attachments) if attachments else []
+
+        # Image + query always goes through vision chat, even if a heavier mode leaked in.
+        if has_images or images:
+            result = run_chat(
+                query,
+                config=config,
+                model_plan=model_plan,
+                on_progress=on_progress,
+                images=images,
+            )
+            with session_scope(config) as session:
+                if get_job(session, job_id) and get_job(session, job_id).status == "cancelled":
+                    return
+                status = "failed" if result.errors and not result.output else "succeeded"
+                set_job_status(
+                    session,
+                    job_id,
+                    status,
+                    error="; ".join(result.errors) if result.errors else None,
+                )
+            return
+
+        if (route or {}).get("intent") == "image_gen":
+            _output, saved, errors, _elapsed = run_image_gen(
+                query,
+                job_id=job_id,
+                config=config,
+                model_plan=model_plan,
+                on_progress=on_progress,
+            )
+            with session_scope(config) as session:
+                current = get_job(session, job_id)
+                if current is None or current.status == "cancelled":
+                    return
+                payload_now = json.loads(current.payload_json or "{}")
+                if saved:
+                    existing = payload_now.get("attachments") if isinstance(payload_now.get("attachments"), list) else []
+                    payload_now["attachments"] = existing + saved
+                    payload_now["generated"] = saved
+                    current.payload_json = json.dumps(payload_now)
+                status = "failed" if errors and not saved else "succeeded"
+                set_job_status(
+                    session,
+                    job_id,
+                    status,
+                    error="; ".join(errors) if errors else None,
+                )
+            return
+
         if mode == "chat":
             result = run_chat(
                 query,
                 config=config,
                 model_plan=model_plan,
                 on_progress=on_progress,
+                images=[],
             )
             with session_scope(config) as session:
                 if get_job(session, job_id) and get_job(session, job_id).status == "cancelled":

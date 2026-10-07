@@ -15,9 +15,17 @@ CHAT_SYSTEM = """You are MulteAgent Assistant — a helpful, concise local AI.
 
 Rules:
 - Match the user's intent directly (greetings → warm short reply; stories → write the story; questions → answer).
-- Do NOT frame creative or casual requests as business strategy, risks, or feasibility.
+- If the user attached image(s), look at them and answer about what you see. Be specific.
+- Do NOT frame creative, casual, or vision requests as business strategy, risks, or feasibility.
 - Prefer clear markdown when useful. Keep greetings to 1–3 sentences.
 - Stay helpful and concrete. Do not mention being a multi-agent board unless asked."""
+
+
+VISION_SYSTEM = """You are MulteAgent Assistant with vision.
+
+Look at every attached image. Describe what is actually in the picture, then answer the user's question.
+Be specific (objects, text, layout, people, charts). If text is in the image, transcribe the important parts.
+Do not invent details you cannot see. Do not treat the image as a business proposal unless asked."""
 
 
 @dataclass
@@ -38,10 +46,19 @@ def run_chat(
     config: Config | None = None,
     model_plan: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
+    images: list[str] | None = None,
 ) -> ChatResult:
     config = config or Config.from_env()
     model_plan = model_plan or {}
-    model = model_plan.get("worker") or model_plan.get("planner") or config.model_fast or config.llm_model
+    pics = [img for img in (images or []) if img]
+    if pics:
+        model = model_plan.get("vision") or config.model_vision or config.llm_model
+        system = VISION_SYSTEM
+        role = "Vision"
+    else:
+        model = model_plan.get("worker") or model_plan.get("planner") or config.model_fast or config.llm_model
+        system = CHAT_SYSTEM
+        role = "Direct reply"
     client = LLMClient(config)
     result = ChatResult()
     started = time.perf_counter()
@@ -60,14 +77,15 @@ def run_chat(
             "type": "agent_start",
             "agent_id": "assistant",
             "name": "Assistant",
-            "role": "Direct reply",
+            "role": role,
             "stage": "chat",
             "accent": "#c4a35a",
+            "model": model,
         },
     )
 
     try:
-        output = client.chat(system=CHAT_SYSTEM, user=query, model=model)
+        output = client.chat(system=system, user=query, model=model, images=pics or None)
         result.output = output
         elapsed = time.perf_counter() - started
         _emit(
@@ -76,7 +94,7 @@ def run_chat(
                 "type": "agent_done",
                 "agent_id": "assistant",
                 "name": "Assistant",
-                "role": "Direct reply",
+                "role": role,
                 "stage": "chat",
                 "accent": "#c4a35a",
                 "elapsed_seconds": elapsed,

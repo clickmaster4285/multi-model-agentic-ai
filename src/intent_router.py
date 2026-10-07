@@ -17,6 +17,13 @@ GREETING_RE = re.compile(
     r"thx|ty|bye|goodbye|see\s*ya|ok|okay|k|cool|nice|great|awesome)[\s!.?]*$",
     re.I,
 )
+IMAGE_GEN_RE = re.compile(
+    r"\b(create|generate|draw|paint|render|make|design|imagine)\b.{0,60}\b"
+    r"(image|picture|photo|illustration|artwork|drawing|logo|icon|poster)\b|"
+    r"\b(image|picture|photo|illustration)\s+of\b|"
+    r"\btext[- ]to[- ]image\b",
+    re.I,
+)
 CREATIVE_RE = re.compile(
     r"\b(write|compose|draft|create|make|tell)\b.+\b(story|poem|joke|song|riddle|haiku|essay|"
     r"script|dialogue|fairy\s*tale|fable)\b|"
@@ -57,6 +64,7 @@ class RouteDecision:
     reason: str
     used_llm: bool = False
     confidence: float = 1.0
+    model: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -66,7 +74,19 @@ class RouteDecision:
             "reason": self.reason,
             "used_llm": self.used_llm,
             "confidence": self.confidence,
+            "model": self.model,
         }
+
+    def with_model(self, model: str) -> RouteDecision:
+        return RouteDecision(
+            requested_mode=self.requested_mode,
+            resolved_mode=self.resolved_mode,
+            intent=self.intent,
+            reason=f"{self.reason} ({model})",
+            used_llm=self.used_llm,
+            confidence=self.confidence,
+            model=model,
+        )
 
 
 def _normalize_mode(mode: str | None) -> str:
@@ -83,6 +103,9 @@ def _heuristic(query: str) -> RouteDecision | None:
 
     if GREETING_RE.match(text) or len(text) <= 12 and not DEBATE_RE.search(text):
         return RouteDecision("auto", "chat", "chat", "greeting / short chitchat -> chat")
+
+    if IMAGE_GEN_RE.search(text):
+        return RouteDecision("auto", "chat", "image_gen", "image generation request -> image model")
 
     if CREATIVE_RE.search(text):
         return RouteDecision("auto", "chat", "creative", "creative writing -> chat")
@@ -160,6 +183,7 @@ def classify_query(
     requested_mode: str | None = "auto",
     config: Config | None = None,
     allow_llm: bool = True,
+    has_images: bool = False,
 ) -> RouteDecision:
     """Resolve execution mode.
 
@@ -169,6 +193,18 @@ def classify_query(
     config = config or Config.from_env()
     requested = _normalize_mode(requested_mode)
     text = query.strip()
+
+    if has_images:
+        vision = (config.model_vision or "").strip() or None
+        return RouteDecision(
+            requested_mode=requested,
+            resolved_mode="chat",
+            intent="vision",
+            reason="image attached -> vision model",
+            used_llm=False,
+            confidence=1.0,
+            model=vision,
+        )
 
     # Hard bypass: never run Optimist/Cynic/Consensus (or agentic tools) on "hi"
     if GREETING_RE.match(text) or (len(text) <= 8 and text.isalpha()):
@@ -182,6 +218,15 @@ def classify_query(
         )
 
     if requested in MANUAL_MODES:
+        if IMAGE_GEN_RE.search(text):
+            return RouteDecision(
+                requested_mode=requested,
+                resolved_mode="chat",
+                intent="image_gen",
+                reason="image generation bypasses debate board",
+                used_llm=False,
+                confidence=1.0,
+            )
         # Debate selected + creative ask -> still chat (business personas are wrong)
         if requested in {"debate", "mixed"} and CREATIVE_RE.search(text):
             return RouteDecision(

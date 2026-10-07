@@ -1,4 +1,4 @@
-import type { DebateEvent, FeedItem, ToolStep } from "@/lib/types";
+import type { ChatImage, DebateEvent, FeedItem, ToolStep } from "@/lib/types";
 import { formatAgentOutput, formatToolResult, summarizeArgs } from "@/lib/format";
 
 export const STATUS_ID = "live-status";
@@ -86,12 +86,15 @@ export function reduceFeed(prev: FeedItem[], event: DebateEvent): FeedItem[] {
   if (type === "route_decided") {
     const requested = String(event.requested_mode || "auto");
     const resolved = String(event.resolved_mode || event.intent || "chat");
+    const model = event.model ? String(event.model) : "";
     const intent = String(event.intent || resolved);
     const reason = String(event.reason || "").slice(0, 80);
     const label =
-      requested === "auto" || requested === resolved
-        ? `Auto -> ${resolved}`
-        : `${requested} (forced)`;
+      intent === "vision"
+        ? `Auto -> vision${model ? ` · ${model}` : ""}`
+        : requested === "auto" || requested === resolved
+          ? `Auto -> ${resolved}`
+          : `${requested} (forced)`;
     return upsertStatus(
       prev,
       "Route",
@@ -128,6 +131,12 @@ export function reduceFeed(prev: FeedItem[], event: DebateEvent): FeedItem[] {
           ? ""
           : JSON.stringify(rawOut, null, 2);
     const body = formatAgentOutput(asText);
+    const imageFiles = Array.isArray(event.images)
+      ? (event.images as { filename?: string; mime?: string }[])
+          .filter((img) => img && img.filename)
+          .map((img) => ({ filename: String(img.filename), mime: img.mime }))
+      : undefined;
+    const jobId = event.job_id ? String(event.job_id) : undefined;
     const hasPending = prev.some((item) => item.agentId === event.agent_id && item.pending);
     if (!hasPending) {
       return [
@@ -141,6 +150,8 @@ export function reduceFeed(prev: FeedItem[], event: DebateEvent): FeedItem[] {
           accent: String(event.accent || "#3aa89a"),
           agentId: String(event.agent_id || ""),
           pending: false,
+          jobId,
+          imageFiles,
         },
       ];
     }
@@ -151,6 +162,8 @@ export function reduceFeed(prev: FeedItem[], event: DebateEvent): FeedItem[] {
             pending: false,
             meta: `${event.role || item.meta || ""} · ${Number(event.elapsed_seconds || 0).toFixed(1)}s`,
             body,
+            jobId: jobId || item.jobId,
+            imageFiles: imageFiles || item.imageFiles,
           }
         : item,
     );
@@ -178,15 +191,17 @@ export function reduceFeed(prev: FeedItem[], event: DebateEvent): FeedItem[] {
 export function buildFeedFromEvents(
   events: DebateEvent[],
   userMessage?: string,
+  images?: ChatImage[],
 ): FeedItem[] {
   let feed: FeedItem[] = [];
-  if (userMessage) {
+  if (userMessage || (images && images.length > 0)) {
     feed = [
       {
         id: uid(),
         kind: "user",
         title: "You",
-        body: userMessage,
+        body: userMessage || "",
+        images,
       },
     ];
   }
@@ -196,10 +211,19 @@ export function buildFeedFromEvents(
   return feed;
 }
 
-export function appendUserMessage(prev: FeedItem[], text: string, meta?: string): FeedItem[] {
+export function appendUserMessage(
+  prev: FeedItem[],
+  text: string,
+  meta?: string,
+  images?: ChatImage[],
+): FeedItem[] {
   const cleaned = prev.filter((item) => item.id !== STATUS_ID);
   const last = cleaned[cleaned.length - 1];
-  if (last?.kind === "user" && last.body.trim() === text.trim()) {
+  if (
+    last?.kind === "user" &&
+    last.body.trim() === text.trim() &&
+    (last.images?.length || 0) === (images?.length || 0)
+  ) {
     return cleaned;
   }
   return [
@@ -210,6 +234,7 @@ export function appendUserMessage(prev: FeedItem[], text: string, meta?: string)
       title: "You",
       meta,
       body: text,
+      images,
     },
   ];
 }

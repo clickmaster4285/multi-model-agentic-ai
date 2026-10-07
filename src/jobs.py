@@ -10,9 +10,10 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from src.attachments import save_images
 from src.config import Config
 from src.intent_router import classify_query
-from src.model_registry import resolve_model_plan
+from src.model_registry import force_vision_model, resolve_model_plan
 from src.models_db import Job, JobEvent, User
 
 
@@ -92,12 +93,25 @@ def create_job(
     if count_jobs_today(session, user.id) >= user.daily_job_quota:
         raise ValueError(f"Daily job quota reached ({user.daily_job_quota}).")
 
-    route = classify_query(query.strip(), requested_mode=requested_mode, config=config)
+    incoming_images = payload.get("images") if isinstance(payload.get("images"), list) else []
+    has_images = bool(incoming_images)
+    query_text = query.strip() or ("What's in this image?" if has_images else "")
+    if not query_text:
+        raise ValueError("query is required")
+
+    route = classify_query(
+        query_text,
+        requested_mode=requested_mode,
+        config=config,
+        has_images=has_images,
+    )
     resolved_mode = route.resolved_mode
+    payload_clean = {k: v for k, v in payload.items() if k != "images"}
     enriched_payload = {
-        **payload,
+        **payload_clean,
         "requested_mode": requested_mode,
         "route": route.as_dict(),
+        "has_images": has_images,
     }
 
     wait = estimate_wait_seconds(session, config)
@@ -108,6 +122,21 @@ def create_job(
         queue_wait_seconds=wait,
         prefer_cloud_overflow=bool(payload.get("allow_overflow", True)),
     )
+    if has_images:
+        model_plan, vision_name = force_vision_model(
+            session,
+            config,
+            model_plan,
+            override_model=str(payload.get("model") or "") or None,
+        )
+        route = route.with_model(vision_name)
+        enriched_payload["route"] = route.as_dict()
+        enriched_payload["vision_model"] = vision_name
+    elif route.intent == "image_gen":
+        image_name = (model_plan.get("image") or "").strip()
+        route = route.with_model(image_name or "none")
+        enriched_payload["route"] = route.as_dict()
+        enriched_payload["image_model"] = image_name
 
     job = Job(
         id=str(uuid.uuid4()),
@@ -115,12 +144,17 @@ def create_job(
         mode=resolved_mode,
         status="queued",
         priority=priority,
-        query=query.strip(),
+        query=query_text,
         payload_json=json.dumps(enriched_payload),
         model_plan_json=json.dumps(model_plan),
     )
     session.add(job)
     session.flush()
+    if incoming_images:
+        saved = save_images(config, job.id, incoming_images)
+        enriched_payload["attachments"] = saved
+        job.payload_json = json.dumps(enriched_payload)
+        session.flush()
     append_event(
         session,
         job.id,
@@ -132,6 +166,11 @@ def create_job(
             "estimated_wait_seconds": wait,
             "model_plan": model_plan,
             "queue_depth": queue_depth(session),
+            "has_images": has_images,
+            "attachments": [
+                {"filename": a["filename"], "mime": a["mime"]}
+                for a in enriched_payload.get("attachments") or []
+            ],
         },
     )
     append_event(
