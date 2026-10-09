@@ -99,3 +99,30 @@ def load_b64_images(config: Config, attachments: list[dict[str, Any]]) -> list[s
         blob = image_path(config, rel).read_bytes()
         out.append(base64.b64encode(blob).decode("ascii"))
     return out
+
+
+def load_pil_images(config: Config, attachments: list[dict[str, Any]]) -> list[Any]:
+    """Load attachment files as RGB PIL images (for img2img)."""
+    from PIL import Image
+
+    out: list[Any] = []
+    for item in attachments:
+        # Prefer user uploads; skip previously generated outputs if mixed.
+        kind = str(item.get("kind") or "").lower()
+        if kind == "generated":
+            continue
+        rel = str(item.get("relpath") or "")
+        if not rel:
+            continue
+        with Image.open(image_path(config, rel)) as im:
+            out.append(im.convert("RGB"))
+    if out:
+        return out
+    # Fallback: any attachment (e.g. retry on a generated image)
+    for item in attachments:
+        rel = str(item.get("relpath") or "")
+        if not rel:
+            continue
+        with Image.open(image_path(config, rel)) as im:
+            out.append(im.convert("RGB"))
+    return out

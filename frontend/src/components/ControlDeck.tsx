@@ -224,7 +224,7 @@ function AgentThumbs({
   }, [jobId, item.images, item.imageFiles]);
   if (!imgs.length) return null;
   return (
-    <div className="chat-thumbs">
+    <div className="chat-thumbs chat-thumbs-generated">
       {imgs.map((img) => (
         <a key={img.url} href={img.url} target="_blank" rel="noreferrer">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -492,6 +492,18 @@ export default function ControlDeck() {
     selectThreadId(null);
   }
 
+  const resizeComposer = useCallback(() => {
+    const el = queryRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 256);
+    el.style.height = `${Math.max(next, 35)}px`;
+  }, []);
+
+  useEffect(() => {
+    requestAnimationFrame(resizeComposer);
+  }, [query, resizeComposer]);
+
   function startNewChat() {
     const thread = createThread("New chat", projectId);
     setThreads(listThreads());
@@ -512,6 +524,7 @@ export default function ControlDeck() {
       prev.forEach((img) => URL.revokeObjectURL(img.url));
       return [];
     });
+    requestAnimationFrame(resizeComposer);
   }
 
   async function beginEdit(item: FeedItem) {
@@ -524,6 +537,7 @@ export default function ControlDeck() {
     const reloaded = await chatImagesToPending(item.images);
     setPendingImages(reloaded);
     queryRef.current?.focus();
+    requestAnimationFrame(resizeComposer);
   }
 
   async function handleDeleteThread(thread: ChatThread, event: MouseEvent) {
@@ -1210,7 +1224,11 @@ export default function ControlDeck() {
               ref={queryRef}
               rows={1}
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                requestAnimationFrame(resizeComposer);
+              }}
+              onInput={resizeComposer}
               onPaste={onComposerPaste}
               onKeyDown={onComposerKeyDown}
               placeholder={

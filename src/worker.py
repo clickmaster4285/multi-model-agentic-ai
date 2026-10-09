@@ -58,35 +58,17 @@ def process_job(job_id: str, config: Config | None = None) -> None:
         attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
         has_images = bool(payload.get("has_images") or attachments)
         images = load_b64_images(config, attachments) if attachments else []
+        intent = (route or {}).get("intent")
 
-        # Image + query always goes through vision chat, even if a heavier mode leaked in.
-        if has_images or images:
-            result = run_chat(
-                query,
-                config=config,
-                model_plan=model_plan,
-                on_progress=on_progress,
-                images=images,
-            )
-            with session_scope(config) as session:
-                if get_job(session, job_id) and get_job(session, job_id).status == "cancelled":
-                    return
-                status = "failed" if result.errors and not result.output else "succeeded"
-                set_job_status(
-                    session,
-                    job_id,
-                    status,
-                    error="; ".join(result.errors) if result.errors else None,
-                )
-            return
-
-        if (route or {}).get("intent") == "image_gen":
+        if intent == "image_gen":
             _output, saved, errors, _elapsed = run_image_gen(
                 query,
                 job_id=job_id,
                 config=config,
                 model_plan=model_plan,
                 on_progress=on_progress,
+                attachments=attachments,
+                image_mode=(route or {}).get("image_mode"),
             )
             with session_scope(config) as session:
                 current = get_job(session, job_id)
@@ -113,7 +95,7 @@ def process_job(job_id: str, config: Config | None = None) -> None:
                 config=config,
                 model_plan=model_plan,
                 on_progress=on_progress,
-                images=[],
+                images=images if (has_images or images) else [],
             )
             with session_scope(config) as session:
                 if get_job(session, job_id) and get_job(session, job_id).status == "cancelled":

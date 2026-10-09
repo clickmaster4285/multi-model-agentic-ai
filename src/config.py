@@ -43,7 +43,9 @@ class Config:
     image_height: int
     image_steps: int
     image_guidance: float
+    image_strength: float
     image_negative_prompt: str
+    image_prompt_polish: bool
     remote_llm_base_url: str
     remote_llm_api_key: str
     http_allowlist: str
@@ -90,12 +92,16 @@ class Config:
             model_image_path=image_path,
             image_width=max(256, int(os.getenv("IMAGE_WIDTH", "768"))),
             image_height=max(256, int(os.getenv("IMAGE_HEIGHT", "768"))),
-            image_steps=max(1, int(os.getenv("IMAGE_STEPS", "25"))),
-            image_guidance=float(os.getenv("IMAGE_GUIDANCE", "7.0")),
+            image_steps=max(1, int(os.getenv("IMAGE_STEPS", "20"))),
+            image_guidance=float(os.getenv("IMAGE_GUIDANCE", "6.5")),
+            image_strength=max(
+                0.05, min(1.0, float(os.getenv("IMAGE_STRENGTH", "0.4")))
+            ),
             image_negative_prompt=os.getenv(
                 "IMAGE_NEGATIVE_PROMPT",
-                "lowres, blurry, distorted, watermark, text, logo",
+                "lowres, blurry, distorted, watermark, text, logo, deformed, ugly",
             ),
+            image_prompt_polish=_bool("IMAGE_PROMPT_POLISH", True),
             remote_llm_base_url=os.getenv("REMOTE_LLM_BASE_URL", "").rstrip("/"),
             remote_llm_api_key=os.getenv("REMOTE_LLM_API_KEY", ""),
             http_allowlist=os.getenv(
@@ -136,7 +142,9 @@ class Config:
             image_height=self.image_height,
             image_steps=self.image_steps,
             image_guidance=self.image_guidance,
+            image_strength=self.image_strength,
             image_negative_prompt=self.image_negative_prompt,
+            image_prompt_polish=self.image_prompt_polish,
             remote_llm_base_url=self.remote_llm_base_url,
             remote_llm_api_key=self.remote_llm_api_key,
             http_allowlist=self.http_allowlist,

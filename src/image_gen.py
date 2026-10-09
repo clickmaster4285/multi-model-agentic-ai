@@ -1,4 +1,4 @@
-"""Text-to-image via in-process Diffusers SDXL (local checkpoint)."""
+"""Text-to-image and image-to-image via in-process Diffusers SDXL."""
 
 from __future__ import annotations
 
@@ -7,13 +7,15 @@ import io
 import time
 from typing import Any, Callable
 
-from src.attachments import save_images
+from src.attachments import load_pil_images, save_images
 from src.config import Config
+from src.image_prompt import polish_prompt
 from src.llm_lock import llm_slot
 from src.sdxl_pipeline import (
     ImageGenCudaError,
     ImageGenNotConfigured,
     generate as sdxl_generate,
+    generate_from_image as sdxl_img2img,
 )
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -68,6 +70,8 @@ def run_image_gen(
     config: Config | None = None,
     model_plan: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    image_mode: str | None = None,
 ) -> tuple[str, list[dict[str, str]], list[str], float]:
     """Return (message, saved attachment dicts, errors, seconds)."""
     config = config or Config.from_env()
@@ -78,6 +82,12 @@ def run_image_gen(
     started = time.perf_counter()
     errors: list[str] = []
     saved: list[dict[str, str]] = []
+    attachments = attachments or []
+
+    mode = (image_mode or "").strip().lower()
+    init_images = load_pil_images(config, attachments) if attachments else []
+    use_img2img = mode == "img2img" or (bool(init_images) and mode != "txt2img")
+    role = "Image edit (img2img)" if use_img2img else "Image generation"
 
     _emit(on_progress, {"type": "session_start", "mode": "chat", "query": query})
     _emit(
@@ -86,7 +96,7 @@ def run_image_gen(
             "type": "agent_start",
             "agent_id": "assistant",
             "name": "Assistant",
-            "role": "Image generation",
+            "role": role,
             "stage": "chat",
             "accent": "#c4a35a",
             "model": label,
@@ -94,12 +104,25 @@ def run_image_gen(
         },
     )
 
+    prompt = (
+        polish_prompt(query, img2img=use_img2img)
+        if config.image_prompt_polish
+        else (query or "").strip()
+    )
+
     output = NO_CHECKPOINT
     path = config.model_image_path
     if path is not None and path.is_file():
         try:
             with llm_slot(config):
-                image = sdxl_generate(query, config=config)
+                if use_img2img:
+                    if not init_images:
+                        raise ValueError(
+                            "img2img requested but no usable attached image was found."
+                        )
+                    image = sdxl_img2img(prompt, init_images[0], config=config)
+                else:
+                    image = sdxl_generate(prompt, config=config)
             buf = io.BytesIO()
             image.save(buf, format="PNG")
             png = buf.getvalue()
@@ -117,11 +140,20 @@ def run_image_gen(
             for row in stored:
                 row["kind"] = "generated"
             saved = stored
-            output = (
-                f"Generated with local SDXL (`{label}`) "
-                f"at {config.image_width}×{config.image_height}, "
-                f"{config.image_steps} steps."
-            )
+            if use_img2img:
+                output = (
+                    f"Edited with local SDXL img2img (`{label}`) "
+                    f"at {config.image_width}×{config.image_height}, "
+                    f"{config.image_steps} steps, strength {config.image_strength:.2f}."
+                )
+            else:
+                output = (
+                    f"Generated with local SDXL (`{label}`) "
+                    f"at {config.image_width}×{config.image_height}, "
+                    f"{config.image_steps} steps."
+                )
+            if prompt != query.strip():
+                output += f"\n\nPrompt used: `{prompt}`"
         except ImageGenNotConfigured as exc:
             errors.append(str(exc))
             output = str(exc)
@@ -146,7 +178,7 @@ def run_image_gen(
             "type": "agent_done",
             "agent_id": "assistant",
             "name": "Assistant",
-            "role": "Image generation" if saved else "Direct reply",
+            "role": role if saved else "Direct reply",
             "stage": "chat",
             "accent": "#c4a35a",
             "elapsed_seconds": elapsed,

@@ -122,7 +122,7 @@ def create_job(
         queue_wait_seconds=wait,
         prefer_cloud_overflow=bool(payload.get("allow_overflow", True)),
     )
-    if has_images:
+    if has_images and route.intent != "image_gen":
         model_plan, vision_name = force_vision_model(
             session,
             config,
@@ -134,7 +134,7 @@ def create_job(
         enriched_payload["vision_model"] = vision_name
     elif route.intent == "image_gen":
         image_name = (model_plan.get("image") or "").strip()
-        route = route.with_model(image_name or "none")
+        route = route.with_model(image_name or "sdxl-local")
         enriched_payload["route"] = route.as_dict()
         enriched_payload["image_model"] = image_name
 

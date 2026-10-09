@@ -46,9 +46,11 @@ Chat prompts like “create an image of …” route to in-process **Hugging Fac
 pip install -r requirements-image-cu118.txt
 ```
 
-3. Defaults are **768×768**, 25 steps, fp16 + model CPU offload + VAE slicing (fits ~8GB VRAM). Prefer ≥32GB system RAM/pagefile when offloading.
-4. Image jobs share `LLM_SLOTS` with chat — unload large Ollama models before generating if VRAM is tight.
-5. First load may download tokenizer/config pieces into the HF cache (online once), then reuse.
+3. Defaults are **768×768**, ~20 steps, fp16 + model CPU offload + VAE slicing (fits ~8GB VRAM). Prefer ≥32GB system RAM/pagefile when offloading.
+4. **txt2img** — text only. **img2img** — attach a reference image + edit/regenerate wording (`IMAGE_STRENGTH`, default `0.4`). Not pixel-perfect text swaps (needs inpainting later).
+5. Auto router picks vision vs txt2img vs img2img from the query; prompts are polished locally (no extra LLM call).
+6. Image jobs share `LLM_SLOTS` with chat — unload large Ollama models before generating if VRAM is tight.
+7. First load may download tokenizer/config pieces into the HF cache (online once), then reuse.
 
 ## Architecture (short)
 
