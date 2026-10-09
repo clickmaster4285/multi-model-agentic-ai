@@ -56,13 +56,19 @@ CREATIVE_RE = re.compile(
     r"\bwith\s+emojis?\b",
     re.I,
 )
+# Office/download asks — tolerate typos (formate, downlaoble) and "in a docx format".
 DOC_GEN_RE = re.compile(
-    r"\b(create|generate|make|write|export|draft|build)\b.{0,80}\b"
+    r"\b(create|generate|make|write|export|draft|build|save|put|give|send|need|want)\b"
+    r".{0,120}\b"
     r"(word|docx|pdf|powerpoint|pptx|slides?|deck|excel|xlsx|spreadsheet|"
     r"html|webpage|web\s*page|csv|zip\s+file|document|report)\b|"
-    r"\b(as\s+a\s+|into\s+a\s+|to\s+a\s+)"
+    r"\b(as\s+a\s+|into\s+a\s+|to\s+a\s+|in\s+a\s+|in\s+)"
     r"(word|docx|pdf|pptx|powerpoint|excel|xlsx|html)\b|"
-    r"\b(downloadable|download)\b.{0,40}\b(pdf|docx|pptx|xlsx|html|file)\b",
+    r"\b(docx?|pdf|pptx?|xlsx?)\s*(formate?|file|doc)?\b|"
+    r"\b(formate?|file)\s*(as\s+)?(docx?|pdf|pptx?|xlsx?|word)\b|"
+    r"\b(downloadable|download|downloa?dable|downla[oa]?ble)\b.{0,60}\b"
+    r"(pdf|docx?|pptx?|xlsx?|html|word|file|formate?)\b|"
+    r"\b(microsoft\s+word|ms\s+word|word\s+doc(ument)?)\b",
     re.I,
 )
 AGENTIC_RE = re.compile(
@@ -80,13 +86,14 @@ DEBATE_RE = re.compile(
 
 CLASSIFY_SYSTEM = """You classify user messages for a multi-agent system.
 Reply with ONLY compact JSON, no markdown:
-{"intent":"chat"|"creative"|"debate"|"agentic"|"image_gen"|"vision","confidence":0.0-1.0,"image_mode":"txt2img"|"img2img"|null}
+{"intent":"chat"|"creative"|"debate"|"agentic"|"doc_gen"|"image_gen"|"vision","confidence":0.0-1.0,"image_mode":"txt2img"|"img2img"|null}
 
 Rules:
 - chat: greetings, thanks, chitchat, simple Q&A
 - creative: stories, poems, jokes, fiction
 - debate: business/strategy decisions needing pros/cons/consensus
 - agentic: tools, research, browsing, multi-step repo/file work
+- doc_gen: user wants a downloadable Word/PDF/PPT/Excel/HTML file (even with typos like formate/docx)
 - image_gen: draw/generate/edit a picture (set image_mode=txt2img or img2img)
 - vision: user attached/asks about an existing image to describe/read (not redraw)
 Prefer chat when unsure and the message is short. Prefer heuristics-style certainty."""
@@ -273,6 +280,8 @@ def _parse_llm_classify(raw: str) -> tuple[str, float, str | None] | None:
         return "chat", conf, None
     if intent == "vision":
         return "vision", conf, None
+    if intent in {"doc_gen", "document", "docs"}:
+        return "doc_gen", conf, None
     if intent == "image_gen":
         return "image_gen", conf, image_mode_s or "txt2img"
     if intent in RESOLVED_MODES:
@@ -316,6 +325,15 @@ def _llm_classify(query: str, config: Config) -> RouteDecision | None:
             used_llm=True,
             confidence=conf,
             model=vision,
+        )
+    if intent_mode == "doc_gen":
+        return RouteDecision(
+            requested_mode="auto",
+            resolved_mode="agentic",
+            intent="doc_gen",
+            reason="fast-model classify -> doc_gen",
+            used_llm=True,
+            confidence=conf,
         )
     return RouteDecision(
         requested_mode="auto",

@@ -113,6 +113,11 @@ class ImageAttachmentIn(BaseModel):
     data: str
 
 
+class ConversationTurnIn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class JobCreatePayload(BaseModel):
     query: str = ""
     mode: Literal["auto", "chat", "debate", "agentic", "mixed"] = "auto"
@@ -122,6 +127,8 @@ class JobCreatePayload(BaseModel):
     allow_overflow: bool = True
     priority: int = 100
     images: list[ImageAttachmentIn] = Field(default_factory=list)
+    # Prior turns in this chat (so “write that as docx” sees previous answers)
+    conversation: list[ConversationTurnIn] = Field(default_factory=list)
     # Explicit composer actions: describe | generate | edit | inpaint | doc_gen
     force_intent: str | None = None
     image_profile: Literal["fast", "quality", "balanced"] | None = None
@@ -311,6 +318,7 @@ def create_job_endpoint(
                 "model": payload.model,
                 "allow_overflow": payload.allow_overflow,
                 "images": [img.model_dump() for img in payload.images],
+                "conversation": [t.model_dump() for t in payload.conversation],
                 "force_intent": payload.force_intent,
                 "image_profile": payload.image_profile,
                 "image_strength": payload.image_strength,

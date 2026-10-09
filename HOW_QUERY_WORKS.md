@@ -197,6 +197,8 @@ Plan → tools → critic loop for research / multi-step work.
 
 Optional args: `template` (`report` | `one_pager` | `pitch`), and `images` / `image` to embed a PNG/JPG already on the job. Reloading a thread merges document attachments from the job payload so download chips survive history replay.
 
+**Follow-ups:** the UI sends prior user/assistant turns as `conversation` on each new job so requests like “write all of this as a docx” include the previous answer (agentic planner/worker and chat both receive that block). Restart the API after pulling this change.
+
 ---
 
 ## Layer 7 — Shared infrastructure

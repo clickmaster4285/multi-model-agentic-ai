@@ -9,6 +9,7 @@ Rules:
 - Each step must be concrete
 - Prefer research/draft/verify style steps
 - For document requests (Word/PDF/PPT/HTML/Excel), include a step that calls the matching write_* tool
+- If ## Prior conversation is present, treat “this / all of this / that” as referring to that content — do not ask the user to re-paste it
 - Do not include tool syntax here
 """
 
@@ -37,6 +38,7 @@ Document rules:
 - Pick template: report (numbered sections), one_pager (compact), pitch (deck-style) when it fits
 - To embed a PNG/JPG already on this job, pass "images":["filename.png"] (from list_artifacts or prior generate)
 - Use the format the user asked for (docx/pdf/pptx/html/xlsx)
+- If ## Prior conversation is present, put that material into the document — never claim content is missing when prior turns are shown
 - After writing, you may list_artifacts or FINAL with download filenames
 
 If you can complete the step without a tool, output ONLY:

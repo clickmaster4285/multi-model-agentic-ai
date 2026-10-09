@@ -173,6 +173,8 @@ export async function createJob(payload: {
   model?: string;
   allow_overflow?: boolean;
   images?: { filename: string; mime: string; data: string }[];
+  /** Prior turns so follow-ups like “write that as docx” keep context */
+  conversation?: { role: "user" | "assistant"; content: string }[];
   force_intent?: ImageForceIntent;
   image_profile?: ImageProfile;
   image_strength?: number;

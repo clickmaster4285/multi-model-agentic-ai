@@ -15,6 +15,20 @@ class LLMError(RuntimeError):
     """Raised when the LLM cannot complete a request."""
 
 
+def _llm_err(exc: BaseException | None) -> str:
+    """Short, readable cause (avoid truncated 'HTTPConnectionPool…')."""
+    if exc is None:
+        return "unknown"
+    if isinstance(exc, requests.ConnectionError):
+        return "connection refused — Ollama is not reachable"
+    if isinstance(exc, requests.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return f"HTTP {exc.response.status_code}: {(exc.response.text or '')[:160]}"
+    msg = str(exc).strip() or type(exc).__name__
+    return msg if len(msg) <= 220 else msg[:217] + "…"
+
+
 class LLMClient:
     def __init__(self, config: Config, *, model: str | None = None, backend: str | None = None) -> None:
         self.config = config.with_model(model) if model else config
@@ -86,7 +100,8 @@ class LLMClient:
                     continue
                 break
         raise LLMError(
-            f"Failed to reach local LLM at {url} (model={cfg.llm_model}). Last error: {last_error}"
+            f"Failed to reach local LLM at {url} (model={cfg.llm_model}). "
+            f"Last error: {_llm_err(last_error)}. Is Ollama running? (ollama serve)"
         )
 
     def _chat_openai_compatible(

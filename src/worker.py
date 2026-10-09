@@ -9,6 +9,7 @@ from typing import Any
 
 from src.agent_store import AgentStore
 from src.agentic.runtime import run_agentic
+from src.conversation import normalize_conversation
 from src.chat_runner import run_chat
 from src.image_gen import run_image_gen
 from src.attachments import load_b64_images
@@ -74,6 +75,7 @@ def process_job(job_id: str, config: Config | None = None) -> None:
         attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
         has_images = bool(payload.get("has_images") or attachments)
         images = load_b64_images(config, attachments) if attachments else []
+        conversation = normalize_conversation(payload.get("conversation"))
         intent = (route or {}).get("intent")
 
         if intent == "image_gen":
@@ -139,6 +141,7 @@ def process_job(job_id: str, config: Config | None = None) -> None:
                 model_plan=model_plan,
                 on_progress=on_progress,
                 images=images if (has_images or images) else [],
+                conversation=conversation,
             )
             with session_scope(config) as session:
                 if get_job(session, job_id) and get_job(session, job_id).status == "cancelled":
@@ -158,6 +161,7 @@ def process_job(job_id: str, config: Config | None = None) -> None:
                 job_id=job_id,
                 config=config,
                 model_plan=model_plan,
+                conversation=conversation,
                 on_progress=on_progress,
             )
             with session_scope(config) as session:
@@ -183,6 +187,7 @@ def process_job(job_id: str, config: Config | None = None) -> None:
                 job_id=job_id,
                 config=config,
                 model_plan=model_plan,
+                conversation=conversation,
                 on_progress=on_progress,
             )
             debate_query = (

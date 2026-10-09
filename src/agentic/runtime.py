@@ -11,6 +11,7 @@ from typing import Any, Callable
 from src.agentic import prompts
 from src.agentic.tools import ToolError, run_tool
 from src.config import Config
+from src.conversation import format_conversation_block, normalize_conversation
 from src.llm_client import LLMClient
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -78,6 +79,7 @@ def run_agentic(
     job_id: str,
     config: Config | None = None,
     model_plan: dict[str, str] | None = None,
+    conversation: list[dict[str, str]] | None = None,
     max_steps: int = 6,
     max_tool_rounds: int = 3,
     on_progress: ProgressCallback | None = None,
@@ -87,6 +89,8 @@ def run_agentic(
     client = LLMClient(config)
     result = AgenticResult()
     started = time.perf_counter()
+    prior = format_conversation_block(normalize_conversation(conversation))
+    goal_block = f"{prior}\n\n## Goal\n{goal}" if prior else f"## Goal\n{goal}"
 
     _emit(on_progress, {"type": "agentic_start", "goal": goal, "job_id": job_id})
 
@@ -104,7 +108,7 @@ def run_agentic(
     )
     plan_raw = client.chat(
         system=prompts.PLANNER_SYSTEM,
-        user=f"## Goal\n{goal}",
+        user=goal_block,
         model=planner_model,
     )
     result.plan = _parse_plan(plan_raw)
@@ -144,7 +148,7 @@ def run_agentic(
         final_text = ""
         for _round in range(max_tool_rounds):
             user_msg = (
-                f"## Goal\n{goal}\n\n"
+                f"{goal_block}\n\n"
                 f"## Current step\n{json.dumps(step)}\n\n"
                 f"## Observations so far\n{chr(10).join(observations) or 'None'}\n"
             )
@@ -216,7 +220,7 @@ def run_agentic(
         },
     )
     critic_user = (
-        f"## Goal\n{goal}\n\n"
+        f"{goal_block}\n\n"
         f"## Plan\n{json.dumps(result.plan, indent=2)}\n\n"
         f"## Step results\n{json.dumps(result.step_outputs, indent=2)[:14000]}"
     )

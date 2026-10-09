@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from src.config import Config
+from src.conversation import format_conversation_block, normalize_conversation
 from src.llm_client import LLMClient
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -18,7 +19,11 @@ Rules:
 - If the user attached image(s), look at them and answer about what you see. Be specific.
 - Do NOT frame creative, casual, or vision requests as business strategy, risks, or feasibility.
 - Prefer clear markdown when useful. Keep greetings to 1–3 sentences.
-- Stay helpful and concrete. Do not mention being a multi-agent board unless asked."""
+- Stay helpful and concrete. Do not mention being a multi-agent board unless asked.
+- Never claim you cannot create Word/PDF/PPT files, and never give pip/python-docx scripts.
+  Downloadable docs are produced by Document tools (write_docx etc.). If the user clearly
+  wants a .docx/.pdf download in this chat turn, tell them to click **Document** or say
+  "create a docx of this" so routing can run the file tools — then briefly answer content only if needed."""
 
 
 VISION_SYSTEM = """You are MulteAgent Assistant with vision.
@@ -47,6 +52,7 @@ def run_chat(
     model_plan: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
     images: list[str] | None = None,
+    conversation: list[dict[str, str]] | None = None,
 ) -> ChatResult:
     config = config or Config.from_env()
     model_plan = model_plan or {}
@@ -85,7 +91,9 @@ def run_chat(
     )
 
     try:
-        output = client.chat(system=system, user=query, model=model, images=pics or None)
+        prior = format_conversation_block(normalize_conversation(conversation))
+        user_msg = f"{prior}\n\n## Current message\n{query}" if prior else query
+        output = client.chat(system=system, user=user_msg, model=model, images=pics or None)
         result.output = output
         elapsed = time.perf_counter() - started
         _emit(

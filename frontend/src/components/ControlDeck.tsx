@@ -89,6 +89,37 @@ const emptyForm: AgentInput = {
   accent: "#6b8cae",
 };
 
+/** Prior user/assistant turns for follow-ups (“write that as a docx”). */
+function conversationFromFeed(
+  items: FeedItem[],
+  maxTurns = 10,
+): { role: "user" | "assistant"; content: string }[] {
+  const turns: { role: "user" | "assistant"; content: string }[] = [];
+  for (const item of items) {
+    if (item.pending) continue;
+    if (item.kind !== "user" && item.kind !== "agent") continue;
+    const content = (item.body || "").trim();
+    if (!content || content === "Working…") continue;
+    // Skip planner/tool scaffolding — keep substantive assistant replies
+    if (item.kind === "agent") {
+      const title = (item.title || "").toLowerCase();
+      if (
+        title.includes("planner") ||
+        title.includes("critic") ||
+        title.includes("worker step") ||
+        title === "downloads"
+      ) {
+        continue;
+      }
+    }
+    turns.push({
+      role: item.kind === "user" ? "user" : "assistant",
+      content: content.length > 6000 ? `${content.slice(0, 5999)}…` : content,
+    });
+  }
+  return turns.slice(-maxTurns);
+}
+
 function titleFromQuery(query: string) {
   const t = query.trim().replace(/\s+/g, " ");
   return t.length > 42 ? `${t.slice(0, 42)}…` : t || "Untitled chat";
@@ -815,14 +846,23 @@ export default function ControlDeck() {
         })),
       );
       const force = opts.forceIntent;
+      // Prior turns only — React state here is still pre-append for this message.
+      const conversation = conversationFromFeed(feed);
+      const jobMode =
+        force === "doc_gen"
+          ? "agentic"
+          : force
+            ? "chat"
+            : runMode;
       const job = await createJob({
         query: trimmed || (force === "describe" ? "What's in this image?" : ""),
-        mode: force ? "chat" : runMode,
+        mode: jobMode,
         execution_mode: parallel ? "parallel" : "sequential",
         agent_ids: [...selected],
         model: modelOverride || undefined,
         allow_overflow: allowOverflow,
         images: payloadImages,
+        conversation,
         force_intent: force,
         image_profile: imageProfile,
         image_strength:

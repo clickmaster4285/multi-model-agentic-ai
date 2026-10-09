@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from src.attachments import save_images
 from src.config import Config
+from src.conversation import normalize_conversation
 from src.intent_router import classify_query
 from src.model_registry import force_vision_model, resolve_model_plan
 from src.models_db import Job, JobEvent, User
@@ -125,6 +126,7 @@ def create_job(
             profile=image_profile,
             strength=strength_f,
         )
+    conversation = normalize_conversation(payload.get("conversation"))
     enriched_payload = {
         **payload_clean,
         "requested_mode": requested_mode,
@@ -135,6 +137,7 @@ def create_job(
         "image_strength": config.image_strength,
         "image_steps": config.image_steps,
         "image_guidance": config.image_guidance,
+        "conversation": conversation,
     }
 
     wait = estimate_wait_seconds(session, config)
