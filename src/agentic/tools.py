@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -21,8 +22,13 @@ from src.artifacts import (
 )
 from src.config import Config, ROOT
 from src.doc_builder import (
+    append_markdown_to_docx,
+    fix_mojibake,
+    markdown_to_plain,
+    parse_inline_markdown,
     resolve_embed_images,
     section_limit,
+    strip_inline_markdown,
     subtitle_line,
     template_name,
 )
@@ -53,25 +59,108 @@ def _ok(meta: dict[str, Any], *, job_id: str, message: str) -> str:
     )
 
 
+def _norm_title(text: str) -> str:
+    t = strip_inline_markdown(str(text or "")).strip().strip("#").strip().lower()
+    t = re.sub(r"^\d+[.)]\s*", "", t)
+    return t
+
+
+def _is_dup(*titles: str) -> bool:
+    norms = [_norm_title(t) for t in titles if _norm_title(t)]
+    return len(norms) >= 2 and len(set(norms)) == 1
+
+
+def _md_html_inline(text: str) -> str:
+    """Escape then restore **bold** / *italic* / `code` as HTML tags."""
+    from src.doc_builder import parse_inline_markdown
+
+    parts: list[str] = []
+    for chunk, style in parse_inline_markdown(text):
+        esc = _esc(chunk)
+        if style.get("code"):
+            esc = f"<code>{esc}</code>"
+        if style.get("bold"):
+            esc = f"<strong>{esc}</strong>"
+        if style.get("italic"):
+            esc = f"<em>{esc}</em>"
+        parts.append(esc)
+    return "".join(parts)
+
+
+def _md_html_blocks(body: str, *, skip: tuple[str, ...] = ()) -> list[str]:
+    from src.doc_builder import iter_markdown_blocks
+
+    out: list[str] = []
+    bullets: list[str] = []
+
+    def flush_bullets() -> None:
+        if bullets:
+            items = "".join(f"<li>{b}</li>" for b in bullets)
+            out.append(f"<ul>{items}</ul>")
+            bullets.clear()
+
+    for block in iter_markdown_blocks(body):
+        kind = block["type"]
+        if kind == "heading":
+            flush_bullets()
+            text = block["text"]
+            if skip and should_skip_html_dup(text, *skip):
+                continue
+            level = max(3, min(int(block["level"]) + 2, 5))
+            out.append(f"<h{level}>{_esc(text)}</h{level}>")
+        elif kind == "bullet":
+            bullets.append(_md_html_inline(block["inline"]))
+        elif kind == "number":
+            flush_bullets()
+            out.append(f"<p>{_md_html_inline(block['inline'])}</p>")
+        elif kind == "rule":
+            flush_bullets()
+            out.append("<hr/>")
+        else:
+            flush_bullets()
+            out.append(f"<p>{_md_html_inline(block.get('inline') or block.get('text') or '')}</p>")
+    flush_bullets()
+    return out
+
+
+def should_skip_html_dup(text: str, *titles: str) -> bool:
+    return _is_dup(text, *titles)
+
+
 def _sections_from_args(args: dict[str, Any]) -> list[tuple[str, str]]:
-    """Accept content string or sections:[{heading,body}]."""
+    """Accept content string or sections:[{heading,body}]. Never invent empty docs."""
     sections = args.get("sections")
     if isinstance(sections, list) and sections:
         out: list[tuple[str, str]] = []
         for row in sections[:40]:
             if not isinstance(row, dict):
                 continue
-            heading = str(row.get("heading") or row.get("title") or "").strip()
-            body = str(row.get("body") or row.get("content") or "").strip()
+            heading = fix_mojibake(str(row.get("heading") or row.get("title") or "")).strip()
+            body = fix_mojibake(str(row.get("body") or row.get("content") or "")).strip()
             if heading or body:
                 out.append((heading or "Section", body))
         if out:
             return out
-    content = str(args.get("content") or "").strip()
-    title = str(args.get("title") or "").strip()
-    if content:
+    content = fix_mojibake(str(args.get("content") or "")).strip()
+    title = fix_mojibake(str(args.get("title") or "")).strip()
+    if content and content not in {"(empty)", "(empty document)"}:
         return [(title or "Document", content)]
-    return [("Document", "(empty)")]
+    raw = fix_mojibake(str(args.get("raw") or "")).strip()
+    if raw and len(raw) > 40:
+        body = raw
+        try:
+            data = json.loads(raw) if raw.startswith("{") else None
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            body = fix_mojibake(str(data.get("content") or data.get("raw") or raw))
+        body = body.strip()
+        if body and len(body) > 20:
+            return [(title or "Document", body)]
+    raise ToolError(
+        "Document tool received empty content. "
+        "Pass structured sections or a non-empty content string in the TOOL JSON args."
+    )
 
 
 def run_tool(
@@ -113,8 +202,10 @@ def run_tool(
             body_parts.append(f"<p class='sub'>{_esc(sub)}</p>")
         for i, (heading, body) in enumerate(sections, start=1):
             label = f"{i}. {heading}" if tmpl == "report" else heading
-            body_html = "<br/>".join(_esc(line) for line in body.splitlines())
-            body_parts.append(f"<h2>{_esc(label)}</h2><p>{body_html}</p>")
+            if label and label != title and not _is_dup(label, title, heading):
+                body_parts.append(f"<h2>{_esc(strip_inline_markdown(label))}</h2>")
+            for block in _md_html_blocks(body, skip=(title, heading, label)):
+                body_parts.append(block)
         # Keep base64 embeds under write_text truncation (MAX_TEXT_CHARS=400k)
         embed_budget = 220_000
         for path in embeds:
@@ -141,8 +232,12 @@ def run_tool(
             f"<style>body{{font-family:Segoe UI,system-ui,sans-serif;max-width:{max_w};"
             "margin:2rem auto;padding:0 1rem;line-height:1.5;color:#1a1a1a}"
             f"h1{{font-size:{h1_size}}}h2{{font-size:1.15rem;margin-top:1.4rem}}"
+            "h3{font-size:1.05rem;margin-top:1.1rem}h4{font-size:1rem;margin-top:1rem}"
+            "ul{margin:0.4rem 0 1rem 1.2rem}li{margin:0.15rem 0}"
             ".sub{color:#555;margin-top:-0.5rem}img{max-width:100%;height:auto}"
-            "figure{margin:1.2rem 0}</style>"
+            "figure{margin:1.2rem 0}hr{border:none;border-top:1px solid #ccc;margin:1.2rem 0}"
+            "code{background:#f2f2f2;padding:0 0.2rem;border-radius:3px}"
+            "</style>"
             f"</head><body><h1>{_esc(title)}</h1>{''.join(body_parts)}</body></html>"
         )
         meta = write_text(config, job_id, filename, html, kind="html")
@@ -159,9 +254,9 @@ def run_tool(
         filename = safe_filename(str(args.get("filename") or "document.docx"), default="document.docx")
         if not filename.lower().endswith(".docx"):
             filename = f"{Path(filename).stem}.docx"
-        title = str(args.get("title") or Path(filename).stem)
+        title = fix_mojibake(str(args.get("title") or Path(filename).stem)).strip() or Path(filename).stem
         tmpl = template_name(args)
-        sub = subtitle_line(args, tmpl)
+        sub = fix_mojibake(subtitle_line(args, tmpl)).strip()
         sections = _sections_from_args(args)[: section_limit(tmpl)]
         embeds, missing_imgs = resolve_embed_images(config, job_id, args)
         doc = Document()
@@ -177,12 +272,13 @@ def run_tool(
             run.bold = True
         for i, (heading, body) in enumerate(sections, start=1):
             label = f"{i}. {heading}" if tmpl == "report" else heading
-            if label and label != title:
-                doc.add_heading(label, level=1)
-            for para in body.split("\n\n"):
-                text = para.strip()
-                if text:
-                    doc.add_paragraph(text)
+            if label and label != title and not _is_dup(label, title, heading):
+                doc.add_heading(strip_inline_markdown(label), level=1)
+            append_markdown_to_docx(
+                doc,
+                body,
+                skip_titles=(title, heading, label),
+            )
         for path in embeds:
             try:
                 doc.add_picture(str(path), width=Inches(5.5 if tmpl != "one_pager" else 4.5))
@@ -230,12 +326,16 @@ def run_tool(
         pdf.set_font("Helvetica", size=body_size)
         for i, (heading, body) in enumerate(sections, start=1):
             label = f"{i}. {heading}" if tmpl == "report" else heading
-            if label and label != title:
+            if label and label != title and not _is_dup(label, title, heading):
                 pdf.set_font("Helvetica", "B", 13 if tmpl != "one_pager" else 11)
-                _cell(_latin(label), h=8)
+                _cell(_latin(strip_inline_markdown(label)), h=8)
                 pdf.ln(1)
-                pdf.set_font("Helvetica", size=body_size)
-            for line in body.splitlines() or [""]:
+            pdf.set_font("Helvetica", size=body_size)
+            plain = markdown_to_plain(body)
+            for line in plain.splitlines() or [""]:
+                # Skip duplicate title line that sometimes rides along in the body
+                if _is_dup(line, title, heading, label):
+                    continue
                 _cell(_latin(line) if line.strip() else " ", h=5 if tmpl == "one_pager" else 6)
             pdf.ln(2)
         for path in embeds:
@@ -282,10 +382,20 @@ def run_tool(
         for heading, body in sections:
             layout = prs.slide_layouts[1] if len(prs.slide_layouts) > 1 else prs.slide_layouts[0]
             s = prs.slides.add_slide(layout)
-            s.shapes.title.text = heading
-            bullets = [ln.strip(" -•\t") for ln in body.splitlines() if ln.strip()]
+            s.shapes.title.text = strip_inline_markdown(heading)
+            from src.doc_builder import iter_markdown_blocks
+
+            bullets: list[str] = []
+            for block in iter_markdown_blocks(body):
+                if block["type"] in {"bullet", "number"}:
+                    bullets.append(block["text"])
+                elif block["type"] == "heading":
+                    if not _is_dup(block["text"], heading, title):
+                        bullets.append(block["text"])
+                elif block["type"] == "paragraph":
+                    bullets.append(block["text"])
             if not bullets:
-                bullets = [body] if body else ["…"]
+                bullets = [strip_inline_markdown(body)] if body else ["…"]
             if len(s.shapes.placeholders) > 1:
                 tf = s.placeholders[1].text_frame
                 tf.clear()

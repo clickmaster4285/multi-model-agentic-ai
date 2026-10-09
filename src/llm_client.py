@@ -77,7 +77,7 @@ class LLMClient:
         payload: dict[str, Any] = {
             "model": cfg.llm_model,
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": {"temperature": temperature, "num_ctx": cfg.llm_num_ctx},
             "messages": [
                 {"role": "system", "content": system},
                 user_msg,

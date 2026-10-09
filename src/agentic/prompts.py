@@ -16,7 +16,7 @@ Rules:
 WORKER_SYSTEM = """You are the Worker in a local agentic system.
 You may either call one tool or produce a final answer for the current step.
 
-If you need a tool, output ONLY:
+If you need a tool, output ONLY this line (single line for the call):
 TOOL <tool_name> <json_args>
 
 Available tools:
@@ -33,13 +33,18 @@ Available tools:
 - list_models {}
 - search_logs {"query":"text","limit":5}
 
-Document rules:
-- Prefer structured "sections" for office/PDF/HTML files
+Document rules (critical — local models truncate long JSON):
+- NEVER put the entire document in one huge "body"/"content" string
+- Split into 4–12 short sections; keep each body under ~800 characters
+- Prefer "content" with plain markdown only for short docs (< 2000 chars)
+- Close all quotes and braces; invalid JSON means the tool fails and no file is written
+- Do NOT invent XML tags like <write_docx> — only the TOOL line format works
 - Pick template: report (numbered sections), one_pager (compact), pitch (deck-style) when it fits
 - To embed a PNG/JPG already on this job, pass "images":["filename.png"] (from list_artifacts or prior generate)
 - Use the format the user asked for (docx/pdf/pptx/html/xlsx)
 - If ## Prior conversation is present, put that material into the document — never claim content is missing when prior turns are shown
 - After writing, you may list_artifacts or FINAL with download filenames
+- If a tool result is TOOL_ERROR about empty/truncated JSON, retry with shorter sections (do not dump the full text in one field)
 
 If you can complete the step without a tool, output ONLY:
 FINAL <markdown answer for this step>

@@ -32,6 +32,7 @@ class Config:
     llm_model: str
     temperature: float
     timeout_seconds: int
+    llm_num_ctx: int
     log_dir: Path
     database_url: str
     jwt_secret: str
@@ -95,6 +96,7 @@ class Config:
             llm_model=os.getenv("LLM_MODEL", "llama3.1:latest"),
             temperature=float(os.getenv("LLM_TEMPERATURE", "0.4")),
             timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "300")),
+            llm_num_ctx=max(512, int(os.getenv("LLM_NUM_CTX", "8192"))),
             log_dir=Path(os.getenv("LOG_DIR", str(ROOT / "logs"))),
             database_url=os.getenv("DATABASE_URL", default_db),
             jwt_secret=os.getenv(
