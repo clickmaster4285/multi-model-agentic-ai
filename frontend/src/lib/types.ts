@@ -30,6 +30,14 @@ export type Health = {
   queue_depth?: number;
   estimated_wait_seconds?: number;
   llm_slots?: number;
+  image_slots?: number;
+  image_profile?: string;
+  image_pipeline?: {
+    state?: string;
+    error?: string | null;
+    loaded?: boolean;
+    path?: string | null;
+  };
   auth_required?: boolean;
 };
 

@@ -21,6 +21,8 @@ import {
   deleteAgent,
   fetchJobAttachment,
   getHealth,
+  type ImageForceIntent,
+  type ImageProfile,
   getJobHistory,
   getToken,
   listAgents,
@@ -256,6 +258,8 @@ export default function ControlDeck() {
   const [allowOverflow, setAllowOverflow] = useState(true);
   const [query, setQuery] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [imageProfile, setImageProfile] = useState<ImageProfile>("fast");
+  const [editStrength, setEditStrength] = useState<"close" | "medium" | "restyle">("medium");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const queryRef = useRef<HTMLTextAreaElement | null>(null);
   const [editingFromId, setEditingFromId] = useState<string | null>(null);
@@ -683,14 +687,35 @@ export default function ControlDeck() {
     if (files.length) addImageFiles(files);
   }
 
+  function strengthValue(): number {
+    if (editStrength === "close") return 0.28;
+    if (editStrength === "restyle") return 0.55;
+    return 0.4;
+  }
+
   async function submitMessage(
     text: string,
     images: PendingImage[],
-    opts: { retry?: boolean } = {},
+    opts: { retry?: boolean; forceIntent?: ImageForceIntent } = {},
   ) {
     if (running) return;
     const trimmed = text.trim();
     if (!trimmed && images.length === 0) return;
+    if (opts.forceIntent === "describe" && images.length === 0) {
+      alert("Attach an image to Describe.");
+      return;
+    }
+    if (opts.forceIntent === "generate" && !trimmed) {
+      alert("Type a prompt for Generate.");
+      return;
+    }
+    if (
+      (opts.forceIntent === "edit" || opts.forceIntent === "inpaint") &&
+      images.length === 0
+    ) {
+      alert("Attach an image to Edit / Inpaint.");
+      return;
+    }
     if (runMode === "debate" || runMode === "mixed") {
       if (selected.size === 0) {
         alert("Select at least one agent in Settings.");
@@ -739,14 +764,19 @@ export default function ControlDeck() {
           data: await fileToBase64(img.file),
         })),
       );
+      const force = opts.forceIntent;
       const job = await createJob({
-        query: trimmed,
-        mode: runMode,
+        query: trimmed || (force === "describe" ? "What's in this image?" : ""),
+        mode: force ? "chat" : runMode,
         execution_mode: parallel ? "parallel" : "sequential",
         agent_ids: [...selected],
         model: modelOverride || undefined,
         allow_overflow: allowOverflow,
         images: payloadImages,
+        force_intent: force,
+        image_profile: imageProfile,
+        image_strength:
+          force === "edit" || force === "inpaint" ? strengthValue() : undefined,
       });
       setActiveJobId(job.id);
       setThreads(addJobToThread(threadId, job.id, titleFromQuery(titleSeed)));
@@ -1252,10 +1282,75 @@ export default function ControlDeck() {
               <IconSend />
             </button>
           </div>
-          <div className="composer-row">
+          <div className="composer-row image-actions">
             <button type="button" className="btn ghost sm" onClick={() => setSettingsOpen(true)}>
               {selectionMeta}
             </button>
+            <label className="image-preset">
+              Profile
+              <select
+                value={imageProfile}
+                onChange={(e) => setImageProfile(e.target.value as ImageProfile)}
+              >
+                <option value="fast">Fast</option>
+                <option value="balanced">Balanced</option>
+                <option value="quality">Quality</option>
+              </select>
+            </label>
+            <label className="image-preset">
+              Edit strength
+              <select
+                value={editStrength}
+                onChange={(e) =>
+                  setEditStrength(e.target.value as "close" | "medium" | "restyle")
+                }
+              >
+                <option value="close">Keep close</option>
+                <option value="medium">Medium</option>
+                <option value="restyle">Restyle</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={running || pendingImages.length === 0}
+              title="Vision: describe the attached image (needs Ollama)"
+              onClick={() => void submitMessage(query.trim(), pendingImages, { forceIntent: "describe" })}
+            >
+              Describe
+            </button>
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={running}
+              title="Force local SDXL text-to-image"
+              onClick={() => void submitMessage(query.trim(), pendingImages, { forceIntent: "generate" })}
+            >
+              Generate
+            </button>
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={running || pendingImages.length === 0}
+              title="Force img2img from the attached image"
+              onClick={() => void submitMessage(query.trim(), pendingImages, { forceIntent: "edit" })}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={running || pendingImages.length === 0}
+              title="Inpaint: attach source + a mask_* image (white = repaint)"
+              onClick={() => void submitMessage(query.trim(), pendingImages, { forceIntent: "inpaint" })}
+            >
+              Inpaint
+            </button>
+            {health?.image_pipeline?.state ? (
+              <span className="image-ready" title={health.image_pipeline.error || ""}>
+                Image model: {health.image_pipeline.state}
+              </span>
+            ) : null}
           </div>
         </form>
       </main>

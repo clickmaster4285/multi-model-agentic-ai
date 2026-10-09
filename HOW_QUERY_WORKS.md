@@ -290,4 +290,5 @@ The feed reducer turns these into bubbles. For generated images, `AgentThumbs` f
 ## Related docs
 
 - Quick start & image setup: [README.md](README.md)
+- Speed / efficiency checklist (tiers, status): [IMPROVEMENT_ROADMAP.md](IMPROVEMENT_ROADMAP.md)
 - Broader product / architecture notes: [FULL_PROJECT_PLAN.md](FULL_PROJECT_PLAN.md)

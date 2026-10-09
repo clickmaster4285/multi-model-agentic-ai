@@ -21,6 +21,8 @@ IMAGE_GEN_RE = re.compile(
     r"\b(create|generate|draw|paint|render|make|design|imagine)\b.{0,60}\b"
     r"(image|picture|photo|illustration|artwork|drawing|logo|icon|poster)\b|"
     r"\b(image|picture|photo|illustration)\s+of\b|"
+    r"\b(draw|sketch|paint|illustrate|visualize)\s+(me\s+)?(a|an|the)\b|"
+    r"\b(show\s+me\s+a|generate\s+a)\b|"
     r"\btext[- ]to[- ]image\b|"
     r"\b(ui\s*/?\s*ux|ux\s*/?\s*ui|dashboard|mockup|wireframe|landing\s+page|"
     r"app\s+screen|mobile\s+ui|web\s+ui)\b|"
@@ -28,7 +30,7 @@ IMAGE_GEN_RE = re.compile(
     r"(dashboard|mockup|wireframe|landing\s+page|interface|layout|ui|ux)\b|"
     r"\b(photorealistic|photo[- ]realistic|cinematic|8k|4k|ultra[- ]detailed|"
     r"highly detailed|masterpiece|octane render|unreal engine|concept art|"
-    r"portrait of|landscape of)\b",
+    r"portrait of|landscape of|anime style|pixel art)\b",
     re.I,
 )
 IMAGE_EDIT_RE = re.compile(
@@ -315,11 +317,43 @@ def classify_query(
     config: Config | None = None,
     allow_llm: bool = True,
     has_images: bool = False,
+    force_intent: str | None = None,
 ) -> RouteDecision:
     """Resolve execution mode and optional image_mode (txt2img/img2img)."""
     config = config or Config.from_env()
     requested = _normalize_mode(requested_mode)
     text = query.strip()
+    forced = (force_intent or "").strip().lower()
+
+    # Explicit UI actions bypass Auto guessing entirely.
+    if forced in {"vision", "describe"}:
+        vision = (config.model_vision or "").strip() or None
+        return RouteDecision(
+            requested_mode=requested,
+            resolved_mode="chat",
+            intent="vision",
+            reason="forced describe/vision action",
+            confidence=1.0,
+            model=vision,
+        )
+    if forced in {"image_gen", "generate", "txt2img"}:
+        return _image_gen_decision(
+            requested,
+            reason="forced generate/txt2img action",
+            image_mode="txt2img",
+        )
+    if forced in {"edit", "img2img", "image_edit"}:
+        return _image_gen_decision(
+            requested,
+            reason="forced edit/img2img action",
+            image_mode="img2img",
+        )
+    if forced in {"inpaint", "image_inpaint"}:
+        return _image_gen_decision(
+            requested,
+            reason="forced inpaint action",
+            image_mode="inpaint",
+        )
 
     if has_images:
         return _route_with_images(text, requested, config)
@@ -363,10 +397,16 @@ def classify_query(
     if hit is not None:
         return hit
 
-    # Only call the fast LLM when heuristics are truly ambiguous — keeps Auto snappy.
-    if allow_llm and len(text) >= 40:
+    # LLM classify only for long, decision/tool-shaped ambiguity — never for image cues.
+    if (
+        allow_llm
+        and len(text) >= 80
+        and (DEBATE_RE.search(text) or AGENTIC_RE.search(text))
+        and not IMAGE_GEN_RE.search(text)
+        and not IMAGE_EDIT_RE.search(text)
+    ):
         llm_hit = _llm_classify(query, config)
-        if llm_hit is not None and llm_hit.confidence >= 0.55:
+        if llm_hit is not None and llm_hit.confidence >= 0.6:
             return llm_hit
 
     if len(text) >= 160 and DEBATE_RE.search(text):

@@ -60,6 +60,10 @@ async def lifespan(_app: FastAPI):
     with session_scope(config) as session:
         sync_models_from_ollama(session, config, probe_details=True)
     start_inprocess_worker(config)
+    if config.image_warm_on_start:
+        from src.sdxl_pipeline import warm_pipeline_async
+
+        warm_pipeline_async(config)
     yield
 
 
@@ -117,6 +121,10 @@ class JobCreatePayload(BaseModel):
     allow_overflow: bool = True
     priority: int = 100
     images: list[ImageAttachmentIn] = Field(default_factory=list)
+    # Explicit composer actions: describe | generate | edit | inpaint
+    force_intent: str | None = None
+    image_profile: Literal["fast", "quality", "balanced"] | None = None
+    image_strength: float | None = None
 
 
 class ModelUpdatePayload(BaseModel):
@@ -134,6 +142,8 @@ class DebateRequest(BaseModel):
 
 @app.get("/api/health")
 def health(db: Session = Depends(get_db)) -> dict[str, Any]:
+    from src.sdxl_pipeline import pipeline_status
+
     config = Config.from_env()
     client = LLMClient(config)
     return {
@@ -144,6 +154,9 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "queue_depth": queue_depth(db),
         "estimated_wait_seconds": estimate_wait_seconds(db, config),
         "llm_slots": config.llm_slots,
+        "image_slots": config.image_slots,
+        "image_profile": config.image_profile,
+        "image_pipeline": pipeline_status(),
         "sso_enabled": config.sso_enabled,
         "auth_required": True,
     }
@@ -297,6 +310,9 @@ def create_job_endpoint(
                 "model": payload.model,
                 "allow_overflow": payload.allow_overflow,
                 "images": [img.model_dump() for img in payload.images],
+                "force_intent": payload.force_intent,
+                "image_profile": payload.image_profile,
+                "image_strength": payload.image_strength,
             },
             config=config,
             priority=payload.priority if user.role == "admin" else 100,
@@ -475,7 +491,10 @@ async def job_events_stream(
                     break
             else:
                 idle_rounds = 0
-            await asyncio.sleep(0.35)
+            # Wake early when append_event notifies; fall back to short poll.
+            from src.job_events import wait_job
+
+            await asyncio.to_thread(wait_job, job_id, 0.35)
 
     return StreamingResponse(
         event_generator(),

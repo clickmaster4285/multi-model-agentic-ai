@@ -15,6 +15,8 @@ _lock = threading.Lock()
 _txt2img: Any | None = None
 _img2img: Any | None = None
 _pipeline_path: str | None = None
+_warm_state: str = "cold"  # cold | warming | ready | error
+_warm_error: str | None = None
 
 
 class ImageGenNotConfigured(RuntimeError):
@@ -23,6 +25,15 @@ class ImageGenNotConfigured(RuntimeError):
 
 class ImageGenCudaError(RuntimeError):
     """Raised when the GPU build cannot run kernels (e.g. wrong CUDA wheel)."""
+
+
+def pipeline_status() -> dict[str, Any]:
+    return {
+        "state": _warm_state,
+        "error": _warm_error,
+        "loaded": _txt2img is not None and _img2img is not None,
+        "path": _pipeline_path,
+    }
 
 
 def _check_cuda_kernels() -> None:
@@ -57,7 +68,22 @@ def _enable_memory_savers(pipe: Any) -> None:
         pipe.vae.enable_slicing()
 
 
-def _load_pipelines(resolved: str) -> tuple[Any, Any]:
+def _maybe_tiny_vae(pipe: Any, config: Config, dtype: Any) -> None:
+    if not config.image_tiny_vae:
+        return
+    try:
+        from diffusers import AutoencoderTiny
+
+        logger.info("Swapping in TinyVAE (taesdxl) for faster decode")
+        pipe.vae = AutoencoderTiny.from_pretrained(
+            "madebyollin/taesdxl",
+            torch_dtype=dtype,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("TinyVAE unavailable, keeping default VAE: %s", exc)
+
+
+def _load_pipelines(resolved: str, config: Config) -> tuple[Any, Any]:
     import torch
     from diffusers import (
         StableDiffusionXLImg2ImgPipeline,
@@ -76,6 +102,7 @@ def _load_pipelines(resolved: str) -> tuple[Any, Any]:
     txt.scheduler = UniPCMultistepScheduler.from_config(txt.scheduler.config)
     if getattr(txt, "watermark", None) is not None:
         txt.watermark = None
+    _maybe_tiny_vae(txt, config, dtype)
     # Share weights — do not load the 7GB checkpoint twice.
     img = StableDiffusionXLImg2ImgPipeline(**txt.components)
     img.scheduler = txt.scheduler
@@ -83,13 +110,13 @@ def _load_pipelines(resolved: str) -> tuple[Any, Any]:
         img.watermark = None
     # Offload owns placement — never .to("cuda") before this.
     _enable_memory_savers(txt)
-    logger.info("SDXL txt2img + img2img ready")
+    logger.info("SDXL txt2img + img2img ready (profile=%s)", config.image_profile)
     return txt, img
 
 
 def get_pipelines(config: Config | None = None) -> tuple[Any, Any]:
     """Return (txt2img, img2img) singletons for this process."""
-    global _txt2img, _img2img, _pipeline_path
+    global _txt2img, _img2img, _pipeline_path, _warm_state, _warm_error
     config = config or Config.from_env()
     path = config.model_image_path
     if path is None or not Path(path).is_file():
@@ -101,14 +128,22 @@ def get_pipelines(config: Config | None = None) -> tuple[Any, Any]:
     resolved = str(Path(path).resolve())
     with _lock:
         if _txt2img is not None and _img2img is not None and _pipeline_path == resolved:
+            _warm_state = "ready"
             return _txt2img, _img2img
         if _txt2img is not None:
             logger.info("Reloading SDXL pipelines from %s", resolved)
             _txt2img = None
             _img2img = None
             _pipeline_path = None
-        _txt2img, _img2img = _load_pipelines(resolved)
-        _pipeline_path = resolved
+        try:
+            _txt2img, _img2img = _load_pipelines(resolved, config)
+            _pipeline_path = resolved
+            _warm_state = "ready"
+            _warm_error = None
+        except Exception as exc:  # noqa: BLE001
+            _warm_state = "error"
+            _warm_error = str(exc)
+            raise
         return _txt2img, _img2img
 
 
@@ -117,10 +152,46 @@ def get_pipeline(config: Config | None = None) -> Any:
     return get_pipelines(config)[0]
 
 
+def warm_pipeline_async(config: Config | None = None) -> None:
+    """Background warm-load so the first chat image is not cold."""
+    global _warm_state, _warm_error
+    config = config or Config.from_env()
+    if not config.image_warm_on_start:
+        return
+    if config.model_image_path is None or not Path(config.model_image_path).is_file():
+        logger.info("SDXL warm skipped: no checkpoint configured")
+        return
+
+    def _run() -> None:
+        global _warm_state, _warm_error
+        _warm_state = "warming"
+        try:
+            get_pipelines(config)
+            logger.info("SDXL warm-load complete — image model ready")
+        except Exception as exc:  # noqa: BLE001
+            _warm_state = "error"
+            _warm_error = str(exc)
+            logger.warning("SDXL warm-load failed: %s", exc)
+
+    threading.Thread(target=_run, name="sdxl-warm", daemon=True).start()
+
+
 def _dims(config: Config, width: int | None, height: int | None) -> tuple[int, int]:
     w = width if width is not None else config.image_width
     h = height if height is not None else config.image_height
     return max(256, (int(w) // 8) * 8), max(256, (int(h) // 8) * 8)
+
+
+def _step_callback(should_continue: Any | None):
+    if should_continue is None:
+        return None
+
+    def _cb(pipe: Any, step_index: int, timestep: Any, callback_kwargs: dict) -> dict:
+        if not should_continue():
+            pipe._interrupt = True
+        return callback_kwargs
+
+    return _cb
 
 
 def generate(
@@ -132,6 +203,7 @@ def generate(
     height: int | None = None,
     steps: int | None = None,
     guidance: float | None = None,
+    should_continue: Any | None = None,
 ) -> Any:
     """Run text-to-image; returns a PIL.Image.Image."""
     config = config or Config.from_env()
@@ -144,14 +216,18 @@ def generate(
         if negative_prompt is not None
         else config.image_negative_prompt
     )
-    result = pipe(
-        prompt=prompt,
-        negative_prompt=neg or None,
-        width=w,
-        height=h,
-        num_inference_steps=n_steps,
-        guidance_scale=guide,
-    )
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "negative_prompt": neg or None,
+        "width": w,
+        "height": h,
+        "num_inference_steps": n_steps,
+        "guidance_scale": guide,
+    }
+    cb = _step_callback(should_continue)
+    if cb is not None:
+        kwargs["callback_on_step_end"] = cb
+    result = pipe(**kwargs)
     return result.images[0]
 
 
@@ -164,6 +240,7 @@ def generate_from_image(
     strength: float | None = None,
     steps: int | None = None,
     guidance: float | None = None,
+    should_continue: Any | None = None,
 ) -> Any:
     """Run image-to-image; returns a PIL.Image.Image."""
     from PIL import Image
@@ -172,9 +249,7 @@ def generate_from_image(
     _, pipe = get_pipelines(config)
     n_steps = steps if steps is not None else config.image_steps
     guide = guidance if guidance is not None else config.image_guidance
-    strength_v = (
-        strength if strength is not None else config.image_strength
-    )
+    strength_v = strength if strength is not None else config.image_strength
     strength_v = max(0.05, min(1.0, float(strength_v)))
     neg = (
         negative_prompt
@@ -188,18 +263,79 @@ def generate_from_image(
     else:
         image = image.convert("RGB")
 
-    # Match configured canvas; keep aspect by covering then center-crop.
     target_w, target_h = _dims(config, None, None)
     image = _fit_image(image, target_w, target_h)
 
-    result = pipe(
-        prompt=prompt,
-        image=image,
-        negative_prompt=neg or None,
-        strength=strength_v,
-        num_inference_steps=n_steps,
-        guidance_scale=guide,
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "image": image,
+        "negative_prompt": neg or None,
+        "strength": strength_v,
+        "num_inference_steps": n_steps,
+        "guidance_scale": guide,
+    }
+    cb = _step_callback(should_continue)
+    if cb is not None:
+        kwargs["callback_on_step_end"] = cb
+    result = pipe(**kwargs)
+    return result.images[0]
+
+
+def generate_inpaint(
+    prompt: str,
+    init_image: Any,
+    mask_image: Any,
+    *,
+    config: Config | None = None,
+    negative_prompt: str | None = None,
+    strength: float | None = None,
+    steps: int | None = None,
+    guidance: float | None = None,
+    should_continue: Any | None = None,
+) -> Any:
+    """Inpaint masked regions; mask white = repaint, black = keep."""
+    from PIL import Image
+    from diffusers import StableDiffusionXLInpaintPipeline
+
+    config = config or Config.from_env()
+    txt, _ = get_pipelines(config)
+    # Build inpaint pipe from shared components (no second 7GB load).
+    pipe = StableDiffusionXLInpaintPipeline(**txt.components)
+    pipe.scheduler = txt.scheduler
+
+    n_steps = steps if steps is not None else config.image_steps
+    guide = guidance if guidance is not None else config.image_guidance
+    strength_v = strength if strength is not None else max(config.image_strength, 0.75)
+    strength_v = max(0.05, min(1.0, float(strength_v)))
+    neg = (
+        negative_prompt
+        if negative_prompt is not None
+        else config.image_negative_prompt
     )
+
+    image = init_image if isinstance(init_image, Image.Image) else Image.open(init_image)
+    image = image.convert("RGB")
+    mask = mask_image if isinstance(mask_image, Image.Image) else Image.open(mask_image)
+    mask = mask.convert("L")
+    target_w, target_h = _dims(config, None, None)
+    image = _fit_image(image, target_w, target_h)
+    mask = _fit_image(mask.convert("RGB"), target_w, target_h).convert("L")
+
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "image": image,
+        "mask_image": mask,
+        "negative_prompt": neg or None,
+        "strength": strength_v,
+        "num_inference_steps": n_steps,
+        "guidance_scale": guide,
+        "width": target_w,
+        "height": target_h,
+    }
+    cb = _step_callback(should_continue)
+    if cb is not None:
+        kwargs["callback_on_step_end"] = cb
+    result = pipe(**kwargs)
     return result.images[0]
 
 
@@ -220,8 +356,10 @@ def _fit_image(image: Any, width: int, height: int) -> Any:
 
 def reset_pipeline() -> None:
     """Drop cached pipelines (tests / model path change)."""
-    global _txt2img, _img2img, _pipeline_path
+    global _txt2img, _img2img, _pipeline_path, _warm_state, _warm_error
     with _lock:
         _txt2img = None
         _img2img = None
         _pipeline_path = None
+        _warm_state = "cold"
+        _warm_error = None

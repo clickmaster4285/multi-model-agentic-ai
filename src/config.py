@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -19,6 +19,13 @@ def _bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+_PROFILE_DEFAULTS = {
+    "fast": {"steps": 16, "guidance": 5.5, "strength": 0.42},
+    "quality": {"steps": 28, "guidance": 7.0, "strength": 0.35},
+    "balanced": {"steps": 20, "guidance": 6.5, "strength": 0.4},
+}
+
+
 @dataclass(frozen=True)
 class Config:
     llm_base_url: str
@@ -30,6 +37,7 @@ class Config:
     jwt_secret: str
     jwt_expire_minutes: int
     llm_slots: int
+    image_slots: int
     max_active_jobs_per_user: int
     queue_depth_limit: int
     overflow_wait_seconds: float
@@ -46,6 +54,10 @@ class Config:
     image_strength: float
     image_negative_prompt: str
     image_prompt_polish: bool
+    image_profile: str
+    image_warm_on_start: bool
+    image_unload_ollama: bool
+    image_tiny_vae: bool
     remote_llm_base_url: str
     remote_llm_api_key: str
     http_allowlist: str
@@ -68,6 +80,16 @@ class Config:
             image_path = default_ckpt
         else:
             image_path = None
+
+        profile = (os.getenv("IMAGE_PROFILE") or "fast").strip().lower()
+        if profile not in _PROFILE_DEFAULTS:
+            profile = "fast"
+        pdata = _PROFILE_DEFAULTS[profile]
+
+        steps_raw = os.getenv("IMAGE_STEPS")
+        guidance_raw = os.getenv("IMAGE_GUIDANCE")
+        strength_raw = os.getenv("IMAGE_STRENGTH")
+
         return cls(
             llm_base_url=os.getenv("LLM_BASE_URL", "http://localhost:11434").rstrip("/"),
             llm_model=os.getenv("LLM_MODEL", "llama3.1:latest"),
@@ -81,6 +103,7 @@ class Config:
             ),
             jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "720")),
             llm_slots=max(1, int(os.getenv("LLM_SLOTS", "1"))),
+            image_slots=max(1, int(os.getenv("IMAGE_SLOTS", "1"))),
             max_active_jobs_per_user=max(1, int(os.getenv("MAX_ACTIVE_JOBS_PER_USER", "1"))),
             queue_depth_limit=max(1, int(os.getenv("QUEUE_DEPTH_LIMIT", "40"))),
             overflow_wait_seconds=float(os.getenv("OVERFLOW_WAIT_SECONDS", "45")),
@@ -92,16 +115,28 @@ class Config:
             model_image_path=image_path,
             image_width=max(256, int(os.getenv("IMAGE_WIDTH", "768"))),
             image_height=max(256, int(os.getenv("IMAGE_HEIGHT", "768"))),
-            image_steps=max(1, int(os.getenv("IMAGE_STEPS", "20"))),
-            image_guidance=float(os.getenv("IMAGE_GUIDANCE", "6.5")),
+            image_steps=max(
+                1, int(steps_raw) if steps_raw else int(pdata["steps"])
+            ),
+            image_guidance=float(
+                guidance_raw if guidance_raw else pdata["guidance"]
+            ),
             image_strength=max(
-                0.05, min(1.0, float(os.getenv("IMAGE_STRENGTH", "0.4")))
+                0.05,
+                min(
+                    1.0,
+                    float(strength_raw if strength_raw else pdata["strength"]),
+                ),
             ),
             image_negative_prompt=os.getenv(
                 "IMAGE_NEGATIVE_PROMPT",
                 "lowres, blurry, distorted, watermark, text, logo, deformed, ugly",
             ),
             image_prompt_polish=_bool("IMAGE_PROMPT_POLISH", True),
+            image_profile=profile,
+            image_warm_on_start=_bool("IMAGE_WARM_ON_START", True),
+            image_unload_ollama=_bool("IMAGE_UNLOAD_OLLAMA", True),
+            image_tiny_vae=_bool("IMAGE_TINY_VAE", False),
             remote_llm_base_url=os.getenv("REMOTE_LLM_BASE_URL", "").rstrip("/"),
             remote_llm_api_key=os.getenv("REMOTE_LLM_API_KEY", ""),
             http_allowlist=os.getenv(
@@ -119,39 +154,44 @@ class Config:
     def with_model(self, model: str | None) -> Config:
         if not model:
             return self
-        return Config(
-            llm_base_url=self.llm_base_url,
-            llm_model=model,
-            temperature=self.temperature,
-            timeout_seconds=self.timeout_seconds,
-            log_dir=self.log_dir,
-            database_url=self.database_url,
-            jwt_secret=self.jwt_secret,
-            jwt_expire_minutes=self.jwt_expire_minutes,
-            llm_slots=self.llm_slots,
-            max_active_jobs_per_user=self.max_active_jobs_per_user,
-            queue_depth_limit=self.queue_depth_limit,
-            overflow_wait_seconds=self.overflow_wait_seconds,
-            model_fast=self.model_fast,
-            model_strong=self.model_strong,
-            model_cloud=self.model_cloud,
-            model_vision=self.model_vision,
-            model_image=self.model_image,
-            model_image_path=self.model_image_path,
-            image_width=self.image_width,
-            image_height=self.image_height,
-            image_steps=self.image_steps,
-            image_guidance=self.image_guidance,
-            image_strength=self.image_strength,
-            image_negative_prompt=self.image_negative_prompt,
-            image_prompt_polish=self.image_prompt_polish,
-            remote_llm_base_url=self.remote_llm_base_url,
-            remote_llm_api_key=self.remote_llm_api_key,
-            http_allowlist=self.http_allowlist,
-            artifacts_dir=self.artifacts_dir,
-            sso_enabled=self.sso_enabled,
-            default_admin_user=self.default_admin_user,
-            default_admin_password=self.default_admin_password,
-            api_host=self.api_host,
-            api_port=self.api_port,
+        return replace(self, llm_model=model)
+
+    def with_image_overrides(
+        self,
+        *,
+        steps: int | None = None,
+        guidance: float | None = None,
+        strength: float | None = None,
+        profile: str | None = None,
+    ) -> Config:
+        """Apply per-job image overrides (UI presets / profiles)."""
+        prof = (profile or "").strip().lower() or None
+        pdata = _PROFILE_DEFAULTS.get(prof) if prof else None
+        return replace(
+            self,
+            image_profile=prof or self.image_profile,
+            image_steps=max(
+                1,
+                int(
+                    steps
+                    if steps is not None
+                    else (pdata["steps"] if pdata else self.image_steps)
+                ),
+            ),
+            image_guidance=float(
+                guidance
+                if guidance is not None
+                else (pdata["guidance"] if pdata else self.image_guidance)
+            ),
+            image_strength=max(
+                0.05,
+                min(
+                    1.0,
+                    float(
+                        strength
+                        if strength is not None
+                        else (pdata["strength"] if pdata else self.image_strength)
+                    ),
+                ),
+            ),
         )

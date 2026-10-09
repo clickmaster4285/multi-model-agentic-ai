@@ -1170,6 +1170,39 @@ body {
   padding-top: 0.35rem;
 }
 
+.composer-row.image-actions {
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+  align-items: center;
+}
+
+.image-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.image-preset select {
+  width: auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0.2rem 0.35rem;
+  font-size: 0.72rem;
+  border-radius: 0.4rem;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.image-ready {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+
 .msg-toolbar {
   display: flex;
   flex-wrap: wrap;

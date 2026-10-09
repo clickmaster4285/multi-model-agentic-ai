@@ -61,14 +61,41 @@ def process_job(job_id: str, config: Config | None = None) -> None:
         intent = (route or {}).get("intent")
 
         if intent == "image_gen":
+            img_cfg = config
+            try:
+                img_cfg = config.with_image_overrides(
+                    profile=str(payload.get("image_profile") or "") or None,
+                    strength=(
+                        float(payload["image_strength"])
+                        if payload.get("image_strength") is not None
+                        else None
+                    ),
+                    steps=(
+                        int(payload["image_steps"])
+                        if payload.get("image_steps") is not None
+                        else None
+                    ),
+                    guidance=(
+                        float(payload["image_guidance"])
+                        if payload.get("image_guidance") is not None
+                        else None
+                    ),
+                )
+            except (TypeError, ValueError):
+                img_cfg = config
+
+            def _still_running() -> bool:
+                return not _is_cancelled(job_id)
+
             _output, saved, errors, _elapsed = run_image_gen(
                 query,
                 job_id=job_id,
-                config=config,
+                config=img_cfg,
                 model_plan=model_plan,
                 on_progress=on_progress,
                 attachments=attachments,
                 image_mode=(route or {}).get("image_mode"),
+                should_continue=_still_running,
             )
             with session_scope(config) as session:
                 current = get_job(session, job_id)

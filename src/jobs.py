@@ -95,23 +95,46 @@ def create_job(
 
     incoming_images = payload.get("images") if isinstance(payload.get("images"), list) else []
     has_images = bool(incoming_images)
+    force_intent = str(payload.get("force_intent") or "").strip().lower() or None
     query_text = query.strip() or ("What's in this image?" if has_images else "")
     if not query_text:
         raise ValueError("query is required")
+    if force_intent in {"edit", "img2img", "image_edit", "inpaint", "image_inpaint"} and not has_images:
+        raise ValueError("Edit/inpaint requires an attached image.")
+    if force_intent in {"vision", "describe"} and not has_images:
+        raise ValueError("Describe requires an attached image.")
 
     route = classify_query(
         query_text,
         requested_mode=requested_mode,
         config=config,
         has_images=has_images,
+        force_intent=force_intent,
     )
     resolved_mode = route.resolved_mode
     payload_clean = {k: v for k, v in payload.items() if k != "images"}
+    # Apply per-job image profile / strength from UI presets.
+    image_profile = str(payload.get("image_profile") or "").strip().lower() or None
+    image_strength = payload.get("image_strength")
+    try:
+        strength_f = float(image_strength) if image_strength is not None else None
+    except (TypeError, ValueError):
+        strength_f = None
+    if image_profile or strength_f is not None:
+        config = config.with_image_overrides(
+            profile=image_profile,
+            strength=strength_f,
+        )
     enriched_payload = {
         **payload_clean,
         "requested_mode": requested_mode,
         "route": route.as_dict(),
         "has_images": has_images,
+        "force_intent": force_intent,
+        "image_profile": config.image_profile,
+        "image_strength": config.image_strength,
+        "image_steps": config.image_steps,
+        "image_guidance": config.image_guidance,
     }
 
     wait = estimate_wait_seconds(session, config)
@@ -185,6 +208,8 @@ def create_job(
 
 
 def append_event(session: Session, job_id: str, event: dict[str, Any]) -> JobEvent:
+    from src.job_events import notify_job
+
     last_seq = session.scalar(
         select(func.max(JobEvent.seq)).where(JobEvent.job_id == job_id)
     )
@@ -192,6 +217,7 @@ def append_event(session: Session, job_id: str, event: dict[str, Any]) -> JobEve
     row = JobEvent(job_id=job_id, seq=seq, event_json=json.dumps(event, ensure_ascii=False))
     session.add(row)
     session.flush()
+    notify_job(job_id)
     return row
 
 

@@ -21,6 +21,34 @@ _NOISE_RE = re.compile(
     r"and\s+then\s+regenerate(\s+the)?\s*(image)?)\b",
     re.I,
 )
+_RICH_TAGS = (
+    "photorealistic",
+    "cinematic",
+    "8k",
+    "4k",
+    "highly detailed",
+    "masterpiece",
+    "octane",
+    "unreal engine",
+    "volumetric",
+    "sharp focus",
+)
+
+
+def should_polish(query: str, *, img2img: bool = False) -> bool:
+    """Skip enrichment when the user already wrote a rich SDXL-style prompt."""
+    text = (query or "").strip()
+    if not text:
+        return False
+    if img2img:
+        return True  # always add keep-layout hints for edits
+    lower = text.lower()
+    rich_hits = sum(1 for t in _RICH_TAGS if t in lower)
+    if rich_hits >= 2 and len(text) >= 80:
+        return False
+    if len(text) >= 220:
+        return False
+    return True
 
 
 def polish_prompt(query: str, *, img2img: bool = False) -> str:
@@ -43,10 +71,7 @@ def polish_prompt(query: str, *, img2img: bool = False) -> str:
                 "only apply the requested changes"
             )
     else:
-        # Light quality boost for short scene prompts (skip if already rich).
-        if len(text) < 120 and not any(
-            t in lower for t in ("photorealistic", "cinematic", "8k", "highly detailed")
-        ):
+        if len(text) < 120 and not any(t in lower for t in _RICH_TAGS):
             text = f"{text}, highly detailed, sharp focus, natural lighting"
 
     return text[:800]

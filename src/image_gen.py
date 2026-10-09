@@ -7,15 +7,17 @@ import io
 import time
 from typing import Any, Callable
 
-from src.attachments import load_pil_images, save_images
+from src.attachments import load_mask_image, load_pil_images, save_images
 from src.config import Config
-from src.image_prompt import polish_prompt
-from src.llm_lock import llm_slot
+from src.image_prompt import polish_prompt, should_polish
+from src.llm_lock import image_slot
+from src.ollama_mgmt import unload_ollama_models
 from src.sdxl_pipeline import (
     ImageGenCudaError,
     ImageGenNotConfigured,
     generate as sdxl_generate,
     generate_from_image as sdxl_img2img,
+    generate_inpaint as sdxl_inpaint,
 )
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -72,6 +74,7 @@ def run_image_gen(
     on_progress: ProgressCallback | None = None,
     attachments: list[dict[str, Any]] | None = None,
     image_mode: str | None = None,
+    should_continue: Callable[[], bool] | None = None,
 ) -> tuple[str, list[dict[str, str]], list[str], float]:
     """Return (message, saved attachment dicts, errors, seconds)."""
     config = config or Config.from_env()
@@ -86,8 +89,17 @@ def run_image_gen(
 
     mode = (image_mode or "").strip().lower()
     init_images = load_pil_images(config, attachments) if attachments else []
-    use_img2img = mode == "img2img" or (bool(init_images) and mode != "txt2img")
-    role = "Image edit (img2img)" if use_img2img else "Image generation"
+    mask = load_mask_image(config, attachments) if attachments else None
+    use_inpaint = mode == "inpaint" or (mode == "img2img" and mask is not None)
+    use_img2img = (not use_inpaint) and (
+        mode == "img2img" or (bool(init_images) and mode not in {"txt2img", "inpaint"})
+    )
+    if use_inpaint:
+        role = "Image edit (inpaint)"
+    elif use_img2img:
+        role = "Image edit (img2img)"
+    else:
+        role = "Image generation"
 
     _emit(on_progress, {"type": "session_start", "mode": "chat", "query": query})
     _emit(
@@ -104,25 +116,64 @@ def run_image_gen(
         },
     )
 
+    raw_query = (query or "").strip()
+    needs_edit_polish = use_img2img or use_inpaint
     prompt = (
-        polish_prompt(query, img2img=use_img2img)
+        polish_prompt(raw_query, img2img=needs_edit_polish)
         if config.image_prompt_polish
-        else (query or "").strip()
+        and should_polish(raw_query, img2img=needs_edit_polish)
+        else raw_query
     )
 
     output = NO_CHECKPOINT
     path = config.model_image_path
     if path is not None and path.is_file():
         try:
-            with llm_slot(config):
-                if use_img2img:
+            if config.image_unload_ollama:
+                unloaded = unload_ollama_models(config)
+                if unloaded:
+                    _emit(
+                        on_progress,
+                        {
+                            "type": "status",
+                            "message": f"Freed Ollama VRAM: {', '.join(unloaded)}",
+                        },
+                    )
+            with image_slot(config):
+                if use_inpaint:
+                    if not init_images:
+                        raise ValueError("Inpaint needs a source image attachment.")
+                    if mask is None:
+                        raise ValueError(
+                            "Inpaint needs a mask image (filename containing 'mask'; "
+                            "white = areas to repaint). Or use Edit (img2img) without a mask."
+                        )
+                    image = sdxl_inpaint(
+                        prompt,
+                        init_images[0],
+                        mask,
+                        config=config,
+                        should_continue=should_continue,
+                    )
+                elif use_img2img:
                     if not init_images:
                         raise ValueError(
                             "img2img requested but no usable attached image was found."
                         )
-                    image = sdxl_img2img(prompt, init_images[0], config=config)
+                    image = sdxl_img2img(
+                        prompt,
+                        init_images[0],
+                        config=config,
+                        should_continue=should_continue,
+                    )
                 else:
-                    image = sdxl_generate(prompt, config=config)
+                    image = sdxl_generate(
+                        prompt,
+                        config=config,
+                        should_continue=should_continue,
+                    )
+            if should_continue is not None and not should_continue():
+                raise RuntimeError("Image generation cancelled.")
             buf = io.BytesIO()
             image.save(buf, format="PNG")
             png = buf.getvalue()
@@ -140,19 +191,25 @@ def run_image_gen(
             for row in stored:
                 row["kind"] = "generated"
             saved = stored
-            if use_img2img:
+            if use_inpaint:
                 output = (
-                    f"Edited with local SDXL img2img (`{label}`) "
+                    f"Inpainted with local SDXL (`{label}`, profile={config.image_profile}) "
+                    f"at {config.image_width}×{config.image_height}, "
+                    f"{config.image_steps} steps, strength {config.image_strength:.2f}."
+                )
+            elif use_img2img:
+                output = (
+                    f"Edited with local SDXL img2img (`{label}`, profile={config.image_profile}) "
                     f"at {config.image_width}×{config.image_height}, "
                     f"{config.image_steps} steps, strength {config.image_strength:.2f}."
                 )
             else:
                 output = (
-                    f"Generated with local SDXL (`{label}`) "
+                    f"Generated with local SDXL (`{label}`, profile={config.image_profile}) "
                     f"at {config.image_width}×{config.image_height}, "
                     f"{config.image_steps} steps."
                 )
-            if prompt != query.strip():
+            if prompt != raw_query:
                 output += f"\n\nPrompt used: `{prompt}`"
         except ImageGenNotConfigured as exc:
             errors.append(str(exc))

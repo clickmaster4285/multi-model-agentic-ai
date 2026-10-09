@@ -157,6 +157,9 @@ export async function listModels(refresh = false): Promise<ModelInfo[]> {
   return request(`/api/models${refresh ? "?refresh=true" : ""}`);
 }
 
+export type ImageForceIntent = "describe" | "generate" | "edit" | "inpaint";
+export type ImageProfile = "fast" | "quality" | "balanced";
+
 export async function createJob(payload: {
   query: string;
   mode: RunMode;
@@ -165,6 +168,9 @@ export async function createJob(payload: {
   model?: string;
   allow_overflow?: boolean;
   images?: { filename: string; mime: string; data: string }[];
+  force_intent?: ImageForceIntent;
+  image_profile?: ImageProfile;
+  image_strength?: number;
 }): Promise<Job> {
   return request("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
 }
