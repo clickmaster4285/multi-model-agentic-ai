@@ -52,6 +52,16 @@ pip install -r requirements-image-cu118.txt
 6. Image jobs share `LLM_SLOTS` with chat — unload large Ollama models before generating if VRAM is tight.
 7. First load may download tokenizer/config pieces into the HF cache (online once), then reuse.
 
+## Documents (Word / PDF / PPT / Excel / HTML)
+
+Ask Auto for a downloadable file, or click **Document** in the composer:
+
+- “create a PDF report about …”
+- “make a PowerPoint deck on …”
+- “export this as a Word doc”
+
+Agentic tools write files under `artifacts/{job_id}/files/`; the feed shows **Download** chips. See [IMPROVEMENT_ROADMAP.md](IMPROVEMENT_ROADMAP.md) Tier 5.
+
 ## Architecture (short)
 
 | Piece | Role |

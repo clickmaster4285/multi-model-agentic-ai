@@ -1,5 +1,85 @@
-import type { ChatImage, DebateEvent, FeedItem, ToolStep } from "@/lib/types";
+import type { ChatImage, DebateEvent, FeedItem, Job, JobArtifact, ToolStep } from "@/lib/types";
 import { formatAgentOutput, formatToolResult, summarizeArgs } from "@/lib/format";
+
+const DOC_KINDS = new Set([
+  "document",
+  "html",
+  "docx",
+  "pdf",
+  "pptx",
+  "xlsx",
+  "zip",
+]);
+
+/** Document downloads stored on job.payload.attachments (not chat images). */
+export function artifactsFromJobPayload(job: Job): JobArtifact[] {
+  const raw = job.payload?.attachments;
+  if (!Array.isArray(raw)) return [];
+  const out: JobArtifact[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const filename = String(row.filename || "");
+    if (!filename) continue;
+    const kind = String(row.kind || "");
+    const mime = String(row.mime || "");
+    const isDoc =
+      DOC_KINDS.has(kind) ||
+      /\.(pdf|docx|pptx|xlsx|html?|zip|md|txt|csv)$/i.test(filename) ||
+      (mime.startsWith("application/") && !mime.includes("octet-stream")) ||
+      mime === "text/html" ||
+      mime === "text/markdown";
+    if (!isDoc) continue;
+    out.push({
+      filename,
+      mime: mime || undefined,
+      relpath: row.relpath ? String(row.relpath) : undefined,
+      bytes: typeof row.bytes === "number" ? row.bytes : undefined,
+      kind: kind || "document",
+      jobId: job.id,
+    });
+  }
+  return out;
+}
+
+/** Attach payload artifacts to the last agent bubble when SSE events were missing. */
+export function mergeArtifactsFromJob(feed: FeedItem[], job: Job): FeedItem[] {
+  const arts = artifactsFromJobPayload(job);
+  if (!arts.length) return feed;
+  const next = [...feed];
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    if (next[i].kind !== "agent") continue;
+    const existing = next[i].artifacts || [];
+    const seen = new Set(existing.map((a) => a.filename));
+    const merged = [...existing];
+    for (const art of arts) {
+      if (seen.has(art.filename)) continue;
+      seen.add(art.filename);
+      merged.push(art);
+    }
+    next[i] = {
+      ...next[i],
+      artifacts: merged,
+      jobId: next[i].jobId || job.id,
+    };
+    return next;
+  }
+  // No agent bubble — add a lightweight downloads row
+  return [
+    ...next,
+    {
+      id: uid(),
+      kind: "agent",
+      title: "Downloads",
+      meta: "from job",
+      body: "Files from this run",
+      accent: "#3aa89a",
+      pending: false,
+      jobId: job.id,
+      artifacts: arts,
+    },
+  ];
+}
 
 export const STATUS_ID = "live-status";
 
@@ -122,6 +202,47 @@ export function reduceFeed(prev: FeedItem[], event: DebateEvent): FeedItem[] {
   }
   if (type === "tool_call") return attachToolCall(prev, event);
   if (type === "tool_result") return attachToolResult(prev, event);
+  if (type === "artifact_ready") {
+    const filename = String(event.filename || "");
+    if (!filename) return prev;
+    const art = {
+      filename,
+      mime: event.mime ? String(event.mime) : undefined,
+      relpath: event.relpath ? String(event.relpath) : undefined,
+      bytes: typeof event.bytes === "number" ? event.bytes : undefined,
+      kind: event.kind ? String(event.kind) : "document",
+      jobId: event.job_id ? String(event.job_id) : undefined,
+    };
+    const next = [...prev];
+    let attached = false;
+    for (let i = next.length - 1; i >= 0; i -= 1) {
+      if (next[i].kind !== "agent") continue;
+      const artifacts = [...(next[i].artifacts || [])].filter((a) => a.filename !== filename);
+      artifacts.push(art);
+      next[i] = {
+        ...next[i],
+        artifacts,
+        jobId: next[i].jobId || art.jobId,
+        body: next[i].pending ? `Created ${filename}…` : next[i].body,
+      };
+      attached = true;
+      break;
+    }
+    if (!attached) {
+      next.push({
+        id: uid(),
+        kind: "agent",
+        title: "Downloads",
+        meta: "file ready",
+        body: `Created ${filename}`,
+        accent: "#3aa89a",
+        pending: false,
+        jobId: art.jobId,
+        artifacts: [art],
+      });
+    }
+    return upsertStatus(next, "File ready", `${filename} — download below`);
+  }
   if (type === "agent_done") {
     const rawOut = event.output;
     const asText =
@@ -164,6 +285,7 @@ export function reduceFeed(prev: FeedItem[], event: DebateEvent): FeedItem[] {
             body,
             jobId: jobId || item.jobId,
             imageFiles: imageFiles || item.imageFiles,
+            artifacts: item.artifacts,
           }
         : item,
     );

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from src.agent_store import AgentStore
 from src.attachments import image_path
+from src.artifacts import resolve_job_file
 from src.auth import (
     bootstrap_admin,
     create_access_token,
@@ -121,7 +122,7 @@ class JobCreatePayload(BaseModel):
     allow_overflow: bool = True
     priority: int = 100
     images: list[ImageAttachmentIn] = Field(default_factory=list)
-    # Explicit composer actions: describe | generate | edit | inpaint
+    # Explicit composer actions: describe | generate | edit | inpaint | doc_gen
     force_intent: str | None = None
     image_profile: Literal["fast", "quality", "balanced"] | None = None
     image_strength: float | None = None
@@ -434,21 +435,34 @@ def job_attachment(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> FileResponse:
+    """Download an image or generated document for this job."""
     job = get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     if user.role != "admin" and job.user_id != user.id:
         raise HTTPException(status_code=403, detail="Forbidden")
+    config = Config.from_env()
     payload = json.loads(job.payload_json or "{}")
     attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
     match = next((a for a in attachments if a.get("filename") == filename), None)
-    if not match:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+    mime = "application/octet-stream"
     try:
-        path = image_path(Config.from_env(), str(match["relpath"]))
+        if match and match.get("relpath"):
+            # Images use attachments.image_path; docs may use files/ via resolve_job_file.
+            rel = str(match["relpath"])
+            mime = str(match.get("mime") or mime)
+            try:
+                path = image_path(config, rel)
+            except (ValueError, FileNotFoundError):
+                path = resolve_job_file(config, job_id, filename)
+        else:
+            path = resolve_job_file(config, job_id, filename)
+            from src.artifacts import mime_for
+
+            mime = mime_for(filename)
     except (ValueError, FileNotFoundError, KeyError) as exc:
         raise HTTPException(status_code=404, detail="Attachment missing") from exc
-    return FileResponse(path, media_type=str(match.get("mime") or "image/jpeg"), filename=filename)
+    return FileResponse(path, media_type=mime, filename=filename)
 
 
 @app.get("/api/jobs/{job_id}/events")

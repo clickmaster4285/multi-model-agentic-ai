@@ -157,7 +157,12 @@ export async function listModels(refresh = false): Promise<ModelInfo[]> {
   return request(`/api/models${refresh ? "?refresh=true" : ""}`);
 }
 
-export type ImageForceIntent = "describe" | "generate" | "edit" | "inpaint";
+export type ImageForceIntent =
+  | "describe"
+  | "generate"
+  | "edit"
+  | "inpaint"
+  | "doc_gen";
 export type ImageProfile = "fast" | "quality" | "balanced";
 
 export async function createJob(payload: {

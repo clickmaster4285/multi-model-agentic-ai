@@ -8,6 +8,7 @@ Rules:
 - 3 to 6 steps
 - Each step must be concrete
 - Prefer research/draft/verify style steps
+- For document requests (Word/PDF/PPT/HTML/Excel), include a step that calls the matching write_* tool
 - Do not include tool syntax here
 """
 
@@ -20,9 +21,23 @@ TOOL <tool_name> <json_args>
 Available tools:
 - read_repo_file {"path":"relative/path"}
 - write_artifact {"filename":"notes.md","content":"..."}
+- write_html {"filename":"page.html","title":"...","template":"report|one_pager|pitch","sections":[{"heading":"...","body":"..."}],"images":["optional.png"]}
+- write_docx {"filename":"doc.docx","title":"...","template":"report|one_pager|pitch","sections":[...],"images":["optional.png"]}
+- write_pdf {"filename":"report.pdf","title":"...","template":"report|one_pager|pitch","sections":[...],"images":["optional.png"]}
+- write_pptx {"filename":"deck.pptx","title":"...","subtitle":"...","template":"pitch|report|one_pager","sections":[{"heading":"...","body":"bullet\\nlines"}],"images":["optional.png"]}
+- write_xlsx {"filename":"data.xlsx","rows":[["A","B"],["1","2"]]}
+- package_zip {"filename":"bundle.zip","files":["optional-name.docx"]}
+- list_artifacts {}
 - http_get {"url":"https://..."}
 - list_models {}
 - search_logs {"query":"text","limit":5}
+
+Document rules:
+- Prefer structured "sections" for office/PDF/HTML files
+- Pick template: report (numbered sections), one_pager (compact), pitch (deck-style) when it fits
+- To embed a PNG/JPG already on this job, pass "images":["filename.png"] (from list_artifacts or prior generate)
+- Use the format the user asked for (docx/pdf/pptx/html/xlsx)
+- After writing, you may list_artifacts or FINAL with download filenames
 
 If you can complete the step without a tool, output ONLY:
 FINAL <markdown answer for this step>
@@ -38,8 +53,8 @@ Output format (strict):
 PASS or NEEDS_WORK
 
 ## Gaps
-Exactly 3 bullet points (use "None" if no gap).
+- ...
 
-## Suggested Follow-ups
-Exactly 3 bullet points.
+## Notes
+- ...
 """

@@ -53,6 +53,7 @@ import MessageAvatar from "@/components/MessageAvatar";
 import {
   appendUserMessage,
   buildFeedFromEvents,
+  mergeArtifactsFromJob,
   reduceFeed,
   STATUS_ID,
   upsertStatus,
@@ -172,12 +173,17 @@ async function attachmentsFromJob(job: Job): Promise<ChatImage[]> {
     if (kind === "generated") continue;
     const filename = String((item as { filename?: string }).filename || "");
     if (!filename) continue;
+    const mime = String((item as { mime?: string }).mime || "");
+    const isImage =
+      mime.startsWith("image/") ||
+      /\.(png|jpe?g|webp|gif)$/i.test(filename);
+    if (!isImage) continue;
     try {
       const url = await fetchJobAttachment(job.id, filename);
       out.push({
         url,
         filename,
-        mime: String((item as { mime?: string }).mime || "image/jpeg"),
+        mime: mime || "image/jpeg",
       });
     } catch {
       // skip missing files
@@ -232,6 +238,47 @@ function AgentThumbs({
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={img.url} alt={img.filename} />
         </a>
+      ))}
+    </div>
+  );
+}
+
+function ArtifactChips({
+  item,
+  fallbackJobId,
+}: {
+  item: FeedItem;
+  fallbackJobId: string | null;
+}) {
+  const jobId = item.jobId || fallbackJobId;
+  const arts = item.artifacts || [];
+  if (!arts.length || !jobId) return null;
+  return (
+    <div className="artifact-chips">
+      {arts.map((art) => (
+        <button
+          key={art.filename}
+          type="button"
+          className="artifact-chip"
+          title={`Download ${art.filename}`}
+          onClick={() => {
+            void (async () => {
+              try {
+                const url = await fetchJobAttachment(jobId, art.filename);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = art.filename;
+                a.click();
+                window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+              } catch (err) {
+                alert(err instanceof Error ? err.message : String(err));
+              }
+            })();
+          }}
+        >
+          ↓ {art.filename}
+          {art.bytes ? ` · ${Math.max(1, Math.round(art.bytes / 1024))} KB` : ""}
+        </button>
       ))}
     </div>
   );
@@ -374,8 +421,11 @@ export default function ControlDeck() {
           try {
             const history = await getJobHistory(jobId);
             const images = await attachmentsFromJob(history.job);
-            const slice = buildFeedFromEvents(history.events, history.job.query, images).filter(
-              (item) => item.id !== STATUS_ID,
+            const slice = mergeArtifactsFromJob(
+              buildFeedFromEvents(history.events, history.job.query, images).filter(
+                (item) => item.id !== STATUS_ID,
+              ),
+              history.job,
             );
             built = [
               ...built,
@@ -1141,6 +1191,7 @@ export default function ControlDeck() {
                         ) : (
                           <>
                             <AgentThumbs item={item} fallbackJobId={activeJobId} />
+                            <ArtifactChips item={item} fallbackJobId={activeJobId} />
                             <MarkdownBody content={item.body} pending={item.pending} />
                           </>
                         )}
@@ -1345,6 +1396,17 @@ export default function ControlDeck() {
               onClick={() => void submitMessage(query.trim(), pendingImages, { forceIntent: "inpaint" })}
             >
               Inpaint
+            </button>
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={running || !query.trim()}
+              title="Create downloadable Word/PDF/PPT/HTML/Excel via agentic tools"
+              onClick={() =>
+                void submitMessage(query.trim(), pendingImages, { forceIntent: "doc_gen" })
+              }
+            >
+              Document
             </button>
             {health?.image_pipeline?.state ? (
               <span className="image-ready" title={health.image_pipeline.error || ""}>

@@ -56,6 +56,15 @@ CREATIVE_RE = re.compile(
     r"\bwith\s+emojis?\b",
     re.I,
 )
+DOC_GEN_RE = re.compile(
+    r"\b(create|generate|make|write|export|draft|build)\b.{0,80}\b"
+    r"(word|docx|pdf|powerpoint|pptx|slides?|deck|excel|xlsx|spreadsheet|"
+    r"html|webpage|web\s*page|csv|zip\s+file|document|report)\b|"
+    r"\b(as\s+a\s+|into\s+a\s+|to\s+a\s+)"
+    r"(word|docx|pdf|pptx|powerpoint|excel|xlsx|html)\b|"
+    r"\b(downloadable|download)\b.{0,40}\b(pdf|docx|pptx|xlsx|html|file)\b",
+    re.I,
+)
 AGENTIC_RE = re.compile(
     r"\b(research|browse|fetch|scrape|http|url|website|repo|codebase|file|artifact|"
     r"multi[- ]?step|use\s+tools?|look\s+up|investigate|crawl)\b|"
@@ -214,6 +223,14 @@ def _heuristic(query: str) -> RouteDecision | None:
             image_mode="txt2img",
         )
 
+    if DOC_GEN_RE.search(text):
+        return RouteDecision(
+            "auto",
+            "agentic",
+            "doc_gen",
+            "document/file generation -> agentic tools",
+        )
+
     if CREATIVE_RE.search(text):
         return RouteDecision("auto", "chat", "creative", "creative writing -> chat")
 
@@ -354,6 +371,14 @@ def classify_query(
             reason="forced inpaint action",
             image_mode="inpaint",
         )
+    if forced in {"doc_gen", "document", "docs"}:
+        return RouteDecision(
+            requested_mode=requested,
+            resolved_mode="agentic",
+            intent="doc_gen",
+            reason="forced document generation action",
+            confidence=1.0,
+        )
 
     if has_images:
         return _route_with_images(text, requested, config)
@@ -374,6 +399,14 @@ def classify_query(
                 requested,
                 reason="image generation bypasses debate board",
                 image_mode="txt2img",
+            )
+        if DOC_GEN_RE.search(text):
+            return RouteDecision(
+                requested_mode=requested,
+                resolved_mode="agentic",
+                intent="doc_gen",
+                reason="document generation bypasses debate board",
+                confidence=1.0,
             )
         if requested in {"debate", "mixed"} and CREATIVE_RE.search(text):
             return RouteDecision(

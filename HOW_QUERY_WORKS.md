@@ -189,9 +189,13 @@ Same checkpoint file for both pipelines (`MODEL_IMAGE_PATH` / default under `mod
 
 Runs selected agents (Optimist, Cynic, …) then Consensus. Used for decisions / trade-offs, not for “draw a seahorse”.
 
-### D) Agentic — `src/agentic/runtime.py`
+### D) Agentic / documents — `src/agentic/runtime.py` + `src/agentic/tools.py`
 
 Plan → tools → critic loop for research / multi-step work.
+
+**Document generation (`doc_gen`):** prompts like “create a PDF/Word/PPT…” (or the **Document** button) route to agentic mode. Tools such as `write_html`, `write_docx`, `write_pdf`, `write_pptx`, `write_xlsx`, and `package_zip` write under `artifacts/{job_id}/files/`, emit `artifact_ready`, and the UI shows download chips.
+
+Optional args: `template` (`report` | `one_pager` | `pitch`), and `images` / `image` to embed a PNG/JPG already on the job. Reloading a thread merges document attachments from the job payload so download chips survive history replay.
 
 ---
 

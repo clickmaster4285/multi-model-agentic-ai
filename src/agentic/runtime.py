@@ -165,6 +165,14 @@ def run_agentic(
                 except (ToolError, Exception) as exc:  # noqa: BLE001
                     obs = f"TOOL_ERROR: {exc}"
                 observations.append(f"{tool_name}: {obs}")
+                # Surface downloadable files created by write_* / package_zip tools.
+                try:
+                    parsed = json.loads(obs)
+                    event = parsed.get("event") if isinstance(parsed, dict) else None
+                    if isinstance(event, dict) and event.get("type") == "artifact_ready":
+                        _emit(on_progress, event)
+                except (json.JSONDecodeError, TypeError):
+                    pass
                 _emit(
                     on_progress,
                     {

@@ -94,6 +94,15 @@ export type ToolStep = {
   error?: boolean;
 };
 
+export type JobArtifact = {
+  filename: string;
+  mime?: string;
+  relpath?: string;
+  bytes?: number;
+  kind?: string;
+  jobId?: string;
+};
+
 export type FeedItem = {
   id: string;
   kind: "user" | "agent" | "system";
@@ -108,4 +117,5 @@ export type FeedItem = {
   images?: ChatImage[];
   jobId?: string;
   imageFiles?: { filename: string; mime?: string }[];
+  artifacts?: JobArtifact[];
 };

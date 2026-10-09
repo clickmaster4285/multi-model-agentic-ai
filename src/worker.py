@@ -45,6 +45,22 @@ def process_job(job_id: str, config: Config | None = None) -> None:
             current = get_job(session, job_id)
             if current is None or current.status == "cancelled":
                 return
+            if event.get("type") == "artifact_ready":
+                payload_now = json.loads(current.payload_json or "{}")
+                arts = payload_now.get("attachments")
+                if not isinstance(arts, list):
+                    arts = []
+                entry = {
+                    "filename": event.get("filename"),
+                    "mime": event.get("mime"),
+                    "relpath": event.get("relpath"),
+                    "bytes": event.get("bytes"),
+                    "kind": event.get("kind") or "document",
+                }
+                arts = [a for a in arts if a.get("filename") != entry.get("filename")]
+                arts.append(entry)
+                payload_now["attachments"] = arts
+                current.payload_json = json.dumps(payload_now)
             append_event(session, job_id, event)
 
     try:
